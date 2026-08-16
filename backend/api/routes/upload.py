@@ -108,16 +108,16 @@ async def upload_file(file: UploadFile = File(...)):
             }
             
             mongodb_id = None
-            if mongodb_service.db:
+            if mongodb_service.db is not None:
                 mongodb_id = await mongodb_service.insert_file_metadata(file_metadata)
-            
+
             # Add documents to vectorstore
             embedder = get_embedder()
             embedder.add_documents(chunks)
             embedder.save_vectorstore()
-            
+
             # Update metadata as processed (if MongoDB available)
-            if mongodb_id and mongodb_service.db:
+            if mongodb_id and mongodb_service.db is not None:
                 await mongodb_service.update_file_metadata(mongodb_id, {"processed": True})
             
             return FileUploadResponse(

@@ -27,11 +27,9 @@ class Settings(BaseSettings):
     ]
     ALLOWED_HOSTS: List[str] = ["*"]
     
-    # Google Gemini API
-    GEMINI_API_KEY: str = ""
-    GEMINI_EMBEDDING_MODEL: str = "models/embedding-001"
-    GEMINI_LLM_MODEL: str = ""  # Empty = auto-detect latest
-    
+    # AWS Bedrock Configuration
+    BEDROCK_MODEL_ID: str = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+
     # AWS S3 Configuration
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""

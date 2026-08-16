@@ -1,16 +1,18 @@
 """
-Embedding generation using Gemini Embeddings API and FAISS storage.
+Embedding generation using Amazon Titan Embeddings and FAISS storage.
 """
 
+import json
 import logging
 import pickle
 from pathlib import Path
 from typing import List, Optional
 import faiss
 import numpy as np
+import boto3
 from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_community.embeddings import BedrockEmbeddings
 
 from core.config import settings
 
@@ -21,13 +23,10 @@ class Embedder:
     """Handles embedding generation and FAISS vector store management."""
     
     def __init__(self):
-        """Initialize the embedder with Gemini embeddings."""
-        if not settings.GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY not configured")
-        
-        self.embeddings = GoogleGenerativeAIEmbeddings(
-            google_api_key=settings.GEMINI_API_KEY,
-            model=settings.GEMINI_EMBEDDING_MODEL
+        """Initialize the embedder with Amazon Titan embeddings."""
+        self.embeddings = BedrockEmbeddings(
+            client=boto3.client("bedrock-runtime", region_name=settings.AWS_REGION),
+            model_id="amazon.titan-embed-text-v2:0"
         )
         self.vectorstore: Optional[FAISS] = None
         self.vectorstore_path = Path(settings.VECTOR_STORE_PATH)

@@ -1,12 +1,13 @@
 """
-RAG generator using Gemini for answer generation.
+RAG generator using AWS Bedrock for answer generation.
 """
 
 import logging
 import re
 from typing import Dict, List
 from datetime import datetime
-import google.generativeai as genai
+from langchain_aws import ChatBedrock
+from langchain_core.messages import HumanMessage
 
 from core.config import settings
 from rag.retriever import Retriever
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class Generator:
-    """Handles RAG pipeline and answer generation using Gemini."""
+    """Handles RAG pipeline and answer generation using AWS Bedrock."""
     
     RAG_PROMPT_TEMPLATE = """You are an AI Knowledge Base Assistant that answers questions STRICTLY based on the provided document context from uploaded files ONLY.
 
@@ -49,65 +50,23 @@ SOURCES: [List all sources used from the documents]
 """
     
     def __init__(self, retriever: Retriever):
-        """Initialize generator with a retriever."""
-        if not settings.GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY not configured")
-        
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        
-        # Use specified model or auto-detect
-        if settings.GEMINI_LLM_MODEL:
-            try:
-                self.model = genai.GenerativeModel(settings.GEMINI_LLM_MODEL)
-                self.model_name = settings.GEMINI_LLM_MODEL
-            except Exception as e:
-                logger.error(f"Failed to initialize model {settings.GEMINI_LLM_MODEL}: {str(e)}")
-                self.model_name = self._get_latest_model()
-                self.model = genai.GenerativeModel(self.model_name)
-        else:
-            self.model_name = self._get_latest_model()
-            self.model = genai.GenerativeModel(self.model_name)
-        
-        logger.info(f"Using Gemini model: {self.model_name}")
-        self.retriever = retriever
-    
-    def _get_latest_model(self) -> str:
-        """Dynamically detect the latest available Gemini model."""
+        """Initialize generator with AWS Bedrock."""
         try:
-            models = genai.list_models()
-            gemini_models = []
-            for model in models:
-                if 'gemini' in model.name.lower() and 'generateContent' in model.supported_generation_methods:
-                    model_name = model.name.replace('models/', '') if model.name.startswith('models/') else model.name
-                    gemini_models.append(model_name)
-            
-            if gemini_models:
-                def model_priority(name):
-                    name_lower = name.lower()
-                    if 'latest' in name_lower:
-                        return (0, name_lower)
-                    elif 'pro' in name_lower:
-                        return (1, name_lower)
-                    elif 'flash' in name_lower:
-                        return (2, name_lower)
-                    return (3, name_lower)
-                
-                gemini_models.sort(key=model_priority)
-                return gemini_models[0]
-            
-            # Fallback
-            fallback_models = ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest", "gemini-1.5-flash", "gemini-pro"]
-            for model_name in fallback_models:
-                try:
-                    test_model = genai.GenerativeModel(model_name)
-                    return model_name
-                except:
-                    continue
-            
-            return "gemini-pro"
+            self.model = ChatBedrock(
+                model_id="openai.gpt-oss-20b-1:0",
+                region_name=settings.AWS_REGION,
+                model_kwargs={
+                    "temperature": settings.TEMPERATURE,
+                    "max_tokens": settings.MAX_TOKENS,
+                }
+            )
+            self.model_name = "openai.gpt-oss-20b-1:0"
+            logger.info(f"Using Bedrock model: {self.model_name}")
         except Exception as e:
-            logger.warning(f"Error detecting latest model: {str(e)}. Using fallback.")
-            return "gemini-pro"
+            logger.error(f"Failed to initialize Bedrock client: {str(e)}")
+            raise ValueError(f"Failed to initialize Bedrock client: {str(e)}")
+
+        self.retriever = retriever
     
     def generate_answer(self, question: str, explain_like_10: bool = False, top_k: int = None) -> Dict:
         """
@@ -201,16 +160,9 @@ SOURCES: [List all sources used from the documents]
                 context=context,
                 explain_mode="Yes" if explain_like_10 else "No"
             )
-            
-            response = self.model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=settings.TEMPERATURE,
-                    max_output_tokens=settings.MAX_TOKENS
-                )
-            )
-            
-            answer_text = response.text
+
+            response = self.model.invoke([HumanMessage(content=prompt)])
+            answer_text = response.content
             answer = self._extract_answer(answer_text)
             sources = self.retriever.get_source_metadata(retrieved_docs)
             
@@ -236,7 +188,11 @@ SOURCES: [List all sources used from the documents]
                 'answer': f"An error occurred while generating the answer: {str(e)}",
                 'sources': [],
                 'confidence_score': 0.0,
-                'similarity_scores': []
+                'similarity_scores': [],
+                'confidence_breakdown': None,
+                'query': question,
+                'timestamp': datetime.utcnow(),
+                'explain_mode': explain_like_10
             }
     
     def _extract_answer(self, response_text: str) -> str:

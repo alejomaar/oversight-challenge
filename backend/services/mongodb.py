@@ -52,14 +52,14 @@ class MongoDBService:
     async def insert_file_metadata(self, file_data: Dict) -> Optional[str]:
         """
         Insert file metadata into MongoDB.
-        
+
         Args:
             file_data: Dictionary with file information
-            
+
         Returns:
             Inserted document ID, None if error
         """
-        if not self.db:
+        if self.db is None:
             return None
         
         try:
@@ -75,7 +75,7 @@ class MongoDBService:
     
     async def get_file_metadata(self, file_id: str) -> Optional[Dict]:
         """Get file metadata by ID."""
-        if not self.db:
+        if self.db is None:
             return None
         
         try:
@@ -90,7 +90,7 @@ class MongoDBService:
     
     async def get_file_by_s3_key(self, s3_key: str) -> Optional[Dict]:
         """Get file metadata by S3 key."""
-        if not self.db:
+        if self.db is None:
             return None
         
         try:
@@ -105,7 +105,7 @@ class MongoDBService:
     
     async def list_files(self, skip: int = 0, limit: int = 100) -> List[Dict]:
         """List all files with pagination."""
-        if not self.db:
+        if self.db is None:
             return []
         
         try:
@@ -123,7 +123,7 @@ class MongoDBService:
     
     async def update_file_metadata(self, file_id: str, update_data: Dict) -> bool:
         """Update file metadata."""
-        if not self.db:
+        if self.db is None:
             return False
         
         try:
@@ -140,7 +140,7 @@ class MongoDBService:
     
     async def delete_file_metadata(self, file_id: str) -> bool:
         """Delete file metadata."""
-        if not self.db:
+        if self.db is None:
             return False
         
         try:
@@ -153,7 +153,7 @@ class MongoDBService:
     
     async def insert_chat_log(self, chat_data: Dict) -> Optional[str]:
         """Insert chat log entry."""
-        if not self.db:
+        if self.db is None:
             return None
         
         try:
@@ -167,7 +167,7 @@ class MongoDBService:
     
     async def get_chat_history(self, user_id: Optional[str] = None, limit: int = 50) -> List[Dict]:
         """Get chat history."""
-        if not self.db:
+        if self.db is None:
             return []
         
         try:

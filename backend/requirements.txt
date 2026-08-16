@@ -16,8 +16,7 @@ pymongo>=4.6.0
 # LangChain & AI
 langchain>=0.1.0
 langchain-community>=0.0.20
-langchain-google-genai>=2.0.0
-google-generativeai>=0.3.0
+langchain-aws>=0.1.0
 
 # Vector Store
 faiss-cpu>=1.7.4
