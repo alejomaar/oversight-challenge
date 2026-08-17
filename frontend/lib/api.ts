@@ -1,6 +1,9 @@
 import axios from "axios";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+const API_UPLOAD_TIMEOUT = parseInt(process.env.API_UPLOAD_TIMEOUT || "300000");
+const API_DEFAULT_SKIP = parseInt(process.env.API_DEFAULT_SKIP || "0");
+const API_DEFAULT_LIMIT = parseInt(process.env.API_DEFAULT_LIMIT || "100");
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -79,7 +82,7 @@ export const apiClient = {
       headers: {
         "Content-Type": "multipart/form-data",
       },
-      timeout: 300000, // 5 minutes timeout for large files
+      timeout: API_UPLOAD_TIMEOUT,
       onUploadProgress: (progressEvent) => {
         if (progressEvent.total) {
           const percentCompleted = Math.round(
@@ -99,7 +102,7 @@ export const apiClient = {
   },
 
   // Files
-  listFiles: async (skip = 0, limit = 100) => {
+  listFiles: async (skip = API_DEFAULT_SKIP, limit = API_DEFAULT_LIMIT) => {
     const response = await api.get("/api/files/", {
       params: { skip, limit },
     });

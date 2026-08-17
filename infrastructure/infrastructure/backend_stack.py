@@ -102,6 +102,9 @@ class BackendStack(Stack):
                 access_point,
                 "/mnt/s3",
             ),
+            environment={
+                "UPLOAD_DIR": "/mnt/s3",
+            },
             description="Knowledge Base RAG API Backend (FastAPI + Mangum)",
         )
 
@@ -115,47 +118,20 @@ class BackendStack(Stack):
             "RagApi",
             rest_api_name="Knowledge-Base-RAG-API",
             description="REST API for Knowledge Base RAG backend",
+            default_cors_preflight_options=apigw.CorsOptions(
+                allow_origins=apigw.Cors.ALL_ORIGINS,
+                allow_methods=apigw.Cors.ALL_METHODS,
+                allow_headers=["*"],
+            ),
         )
 
         integration = apigw.LambdaIntegration(lambda_function)
 
-        # Root endpoint
-        api.root.add_method("GET", integration)
-        api.root.add_method("POST", integration)
-
-        # /api resource
-        api_resource = api.root.add_resource("api")
-
-        # /api/upload endpoint
-        upload_resource = api_resource.add_resource("upload")
-        upload_resource.add_method("POST", integration)
-        upload_resource.add_method("GET", integration)
-
-        # /api/upload/batch endpoint
-        batch_resource = upload_resource.add_resource("batch")
-        batch_resource.add_method("POST", integration)
-
-        # /api/query endpoint
-        query_resource = api_resource.add_resource("query")
-        query_resource.add_method("POST", integration)
-
-        # /api/files endpoint
-        files_resource = api_resource.add_resource("files")
-        files_resource.add_method("GET", integration)
-        files_resource.add_method("POST", integration)
-
-        # /api/files/{file_id} endpoint
-        file_id_resource = files_resource.add_resource("{file_id}")
-        file_id_resource.add_method("GET", integration)
-        file_id_resource.add_method("DELETE", integration)
-
-        # /api/health endpoint
-        health_resource = api_resource.add_resource("health")
-        health_resource.add_method("GET", integration)
-
-        # /api/health/detailed endpoint
-        health_detailed_resource = health_resource.add_resource("detailed")
-        health_detailed_resource.add_method("GET", integration)
+        # Proxy all requests to Lambda
+        proxy = api.root.add_proxy(
+            default_integration=integration,
+            any_method=True,
+        )
 
         CfnOutput(
             self,

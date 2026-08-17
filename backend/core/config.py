@@ -17,19 +17,12 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # API Configuration
-    API_V1_PREFIX: str = "/api/v1"
-    CORS_ORIGINS: List[str] = [
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-        "http://127.0.0.1:8000"
-    ]
+    CORS_ORIGINS: List[str] = ["*"]
     ALLOWED_HOSTS: List[str] = ["*"]
 
     # AWS Configuration
     AWS_REGION: str = "us-east-1"
-    S3_BUCKET_NAME: str = "testing-alejo"
+    S3_BUCKET_NAME: str = ""
 
     # Bedrock Models
     BEDROCK_EMBEDDINGS_MODEL_ID: str = "amazon.titan-embed-text-v2:0"
@@ -51,17 +44,9 @@ class Settings(BaseSettings):
 
     # File Upload Configuration
     MAX_FILE_SIZE: int = 50 * 1024 * 1024
-    UPLOAD_DIR: str = "/mnt/s3"
-
+    UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "./mnt")
     ALLOWED_EXTENSIONS: str = ".pdf,.docx,.doc,.txt"
     SUPPORTED_FILE_EXTENSIONS: str = ".pdf,.docx,.doc,.txt"
-
-    # Security
-    SECRET_KEY: str = "your-secret-key-change-in-production"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-
-    # Logging
-    LOG_LEVEL: str = "INFO"
     
     class Config:
         env_file = ".env"

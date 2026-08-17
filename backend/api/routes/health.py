@@ -4,7 +4,6 @@ Health check endpoints.
 
 from fastapi import APIRouter
 from datetime import datetime
-from services.s3 import s3_service
 
 router = APIRouter()
 
@@ -16,19 +15,5 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
         "service": "Knowledge Base RAG API"
-    }
-
-
-@router.get("/detailed")
-async def detailed_health_check():
-    """Detailed health check with service status."""
-    s3_status = s3_service.client is not None
-
-    return {
-        "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
-        "services": {
-            "s3": "configured" if s3_status else "not_configured"
-        }
     }
 
