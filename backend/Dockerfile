@@ -1,15 +1,11 @@
-FROM python:3.11-slim
+FROM public.ecr.aws/lambda/python:3.12
 
-WORKDIR /app
+WORKDIR ${LAMBDA_TASK_ROOT}
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements and install Python dependencies
+# Copy requirements first for better caching
 COPY requirements.txt .
+
+# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
@@ -18,9 +14,6 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p uploads vectorstore
 
-# Expose port
-EXPOSE 8000
-
-# Run with uvicorn
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Set the Lambda handler - format: module.function
+CMD [ "index.handler" ]
 

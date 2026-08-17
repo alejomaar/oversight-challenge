@@ -70,20 +70,3 @@ async def root():
         "status": "running"
     }
 
-
-if __name__ == "__main__":
-    import uvicorn
-    import sys
-    import os
-    
-    # Use 127.0.0.1 for Windows local development, 0.0.0.0 for Linux/Docker
-    host = "127.0.0.1" if sys.platform == "win32" and settings.ENVIRONMENT == "development" else "0.0.0.0"
-    
-    uvicorn.run(
-        "app:app",
-        host=host,
-        port=8000,
-        reload=settings.ENVIRONMENT == "development",
-        log_level="info"
-    )
-

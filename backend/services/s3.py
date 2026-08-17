@@ -19,28 +19,11 @@ class S3Service:
     """Service for interacting with AWS S3."""
     
     def __init__(self):
-        """Initialize S3 client."""
-        if not all([settings.AWS_ACCESS_KEY_ID, settings.AWS_SECRET_ACCESS_KEY, settings.S3_BUCKET_NAME]):
-            logger.warning("S3 credentials not configured. File uploads will fail.")
-            self.client = None
-            return
-        
+        """Initialize S3 client using Lambda IAM role."""
         try:
-            s3_config = {
-                "aws_access_key_id": settings.AWS_ACCESS_KEY_ID,
-                "aws_secret_access_key": settings.AWS_SECRET_ACCESS_KEY,
-                "region_name": settings.AWS_REGION
-            }
-            
-            if settings.S3_ENDPOINT_URL:
-                s3_config["endpoint_url"] = settings.S3_ENDPOINT_URL
-            
-            self.client = boto3.client("s3", **s3_config)
+            self.client = boto3.client("s3", region_name=settings.AWS_REGION)
             self.bucket_name = settings.S3_BUCKET_NAME
-            
-            # Verify bucket exists
-            self._ensure_bucket_exists()
-            
+            logger.info(f"S3 client initialized with IAM role for region {settings.AWS_REGION}")
         except Exception as e:
             logger.error(f"Failed to initialize S3 client: {str(e)}")
             self.client = None
