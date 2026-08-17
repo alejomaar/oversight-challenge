@@ -8,15 +8,10 @@ services:
     container_name: kb_rag_backend
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
-      - ENVIRONMENT=production
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_REGION=${AWS_REGION:-us-east-1}
-      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
-      - MONGODB_URI=${MONGODB_URI}
-      - MONGODB_DB_NAME=${MONGODB_DB_NAME:-kb_rag}
+      - PYTHONUNBUFFERED=1
     volumes:
       - ./backend/vectorstore:/app/vectorstore
       - ./backend/uploads:/app/uploads
@@ -31,8 +26,8 @@ services:
     container_name: kb_rag_frontend
     ports:
       - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    env_file:
+      - .env
     depends_on:
       - backend
     restart: unless-stopped

@@ -53,15 +53,14 @@ SOURCES: [List all sources used from the documents]
         """Initialize generator with AWS Bedrock."""
         try:
             self.model = ChatBedrock(
-                model_id="openai.gpt-oss-20b-1:0",
+                model_id=settings.BEDROCK_LLM_MODEL_ID,
                 region_name=settings.AWS_REGION,
                 model_kwargs={
                     "temperature": settings.TEMPERATURE,
                     "max_tokens": settings.MAX_TOKENS,
                 }
             )
-            self.model_name = "openai.gpt-oss-20b-1:0"
-            logger.info(f"Using Bedrock model: {self.model_name}")
+            logger.info(f"Using Bedrock model: {settings.BEDROCK_LLM_MODEL_ID}")
         except Exception as e:
             logger.error(f"Failed to initialize Bedrock client: {str(e)}")
             raise ValueError(f"Failed to initialize Bedrock client: {str(e)}")
@@ -133,15 +132,16 @@ SOURCES: [List all sources used from the documents]
                         keyword_matches += matches / len(query_words) if query_words else 0
                 
                 keyword_boost = min(1.0, keyword_matches / len(retrieved_docs)) if retrieved_docs else 0.0
-                
+
+                weights = [float(w) for w in settings.CONFIDENCE_SCORE_WEIGHTS.split(':')]
                 confidence_score = (
-                    0.5 * best_similarity +
-                    0.3 * avg_similarity +
-                    0.1 * consistency +
-                    0.1 * keyword_boost
+                    weights[0] * best_similarity +
+                    weights[1] * avg_similarity +
+                    weights[2] * consistency +
+                    weights[3] * keyword_boost
                 )
-                
-                confidence_score = confidence_score ** 0.9
+
+                confidence_score = confidence_score ** settings.CONFIDENCE_SCORE_POWER
                 confidence_score = max(0.0, min(1.0, confidence_score))
                 
                 confidence_breakdown = {

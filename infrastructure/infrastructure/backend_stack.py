@@ -75,14 +75,14 @@ class BackendStack(Stack):
             root_directory=s3files.CfnAccessPoint.RootDirectoryProperty(
                 path="/",
                 creation_permissions=s3files.CfnAccessPoint.CreationPermissionsProperty(
-                    owner_uid="1000",
-                    owner_gid="1000",
-                    permissions="755",
+                    owner_uid="0",
+                    owner_gid="0",
+                    permissions="777",
                 ),
             ),
             posix_user=s3files.CfnAccessPoint.PosixUserProperty(
-                uid="1000",
-                gid="1000",
+                uid="0",
+                gid="0",
             ),
         )
 
@@ -102,9 +102,6 @@ class BackendStack(Stack):
                 access_point,
                 "/mnt/s3",
             ),
-            environment={
-                "UPLOADS_DIR": "/mnt/s3",
-            },
             description="Knowledge Base RAG API Backend (FastAPI + Mangum)",
         )
 
@@ -122,21 +119,43 @@ class BackendStack(Stack):
 
         integration = apigw.LambdaIntegration(lambda_function)
 
-        # Root and /ask endpoints
-        endpoints = [api.root, api.root.add_resource("ask")]
-        methods = ["GET", "POST"]
+        # Root endpoint
+        api.root.add_method("GET", integration)
+        api.root.add_method("POST", integration)
 
-        for endpoint in endpoints:
-            for method in methods:
-                endpoint.add_method(method, integration)
+        # /api resource
+        api_resource = api.root.add_resource("api")
 
-        # /upload endpoint
-        upload_resource = api.root.add_resource("upload")
+        # /api/upload endpoint
+        upload_resource = api_resource.add_resource("upload")
         upload_resource.add_method("POST", integration)
+        upload_resource.add_method("GET", integration)
 
-        # /list endpoint
-        list_resource = api.root.add_resource("list")
-        list_resource.add_method("GET", integration)
+        # /api/upload/batch endpoint
+        batch_resource = upload_resource.add_resource("batch")
+        batch_resource.add_method("POST", integration)
+
+        # /api/query endpoint
+        query_resource = api_resource.add_resource("query")
+        query_resource.add_method("POST", integration)
+
+        # /api/files endpoint
+        files_resource = api_resource.add_resource("files")
+        files_resource.add_method("GET", integration)
+        files_resource.add_method("POST", integration)
+
+        # /api/files/{file_id} endpoint
+        file_id_resource = files_resource.add_resource("{file_id}")
+        file_id_resource.add_method("GET", integration)
+        file_id_resource.add_method("DELETE", integration)
+
+        # /api/health endpoint
+        health_resource = api_resource.add_resource("health")
+        health_resource.add_method("GET", integration)
+
+        # /api/health/detailed endpoint
+        health_detailed_resource = health_resource.add_resource("detailed")
+        health_detailed_resource.add_method("GET", integration)
 
         CfnOutput(
             self,

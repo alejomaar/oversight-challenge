@@ -21,10 +21,11 @@ async def upload_file(file: UploadFile = File(...)):
     Supports: PDF, DOCX, DOC, TXT
     """
     file_ext = Path(file.filename).suffix.lower()
-    if file_ext not in settings.ALLOWED_EXTENSIONS:
+    allowed = settings.ALLOWED_EXTENSIONS.split(',')
+    if file_ext not in allowed:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type. Allowed: {', '.join(settings.ALLOWED_EXTENSIONS)}"
+            detail=f"Unsupported file type. Allowed: {settings.ALLOWED_EXTENSIONS}"
         )
 
     file_content = await file.read()

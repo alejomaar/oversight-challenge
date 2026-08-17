@@ -16,11 +16,10 @@ logger = logging.getLogger(__name__)
 
 class DocumentProcessor:
     """Handles document loading and chunking."""
-    
-    SUPPORTED_EXTENSIONS = {'.pdf', '.docx', '.doc', '.txt'}
-    
+
     def __init__(self):
         """Initialize document processor."""
+        self.supported_extensions = set(settings.SUPPORTED_FILE_EXTENSIONS.split(','))
         self.splitter = RecursiveCharacterTextSplitter(
             chunk_size=settings.CHUNK_SIZE,
             chunk_overlap=settings.CHUNK_OVERLAP,
@@ -44,11 +43,11 @@ class DocumentProcessor:
             raise FileNotFoundError(f"File not found: {file_path}")
         
         extension = file_path_obj.suffix.lower()
-        
-        if extension not in self.SUPPORTED_EXTENSIONS:
+
+        if extension not in self.supported_extensions:
             raise ValueError(
                 f"Unsupported file format: {extension}. "
-                f"Supported formats: {self.SUPPORTED_EXTENSIONS}"
+                f"Supported formats: {self.supported_extensions}"
             )
         
         try:

@@ -80,10 +80,11 @@ async def upload_file(file: UploadFile = File(...)):
         )
 
     file_extension = Path(file.filename).suffix.lower()
-    if file_extension not in settings.ALLOWED_EXTENSIONS:
+    allowed = settings.ALLOWED_EXTENSIONS.split(',')
+    if file_extension not in allowed:
         raise HTTPException(
             status_code=400,
-            detail=f"File type not allowed. Allowed: {', '.join(settings.ALLOWED_EXTENSIONS)}"
+            detail=f"File type not allowed. Allowed: {settings.ALLOWED_EXTENSIONS}"
         )
 
     file_id = str(uuid4())

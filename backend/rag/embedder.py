@@ -23,10 +23,10 @@ class Embedder:
     """Handles embedding generation and FAISS vector store management."""
     
     def __init__(self):
-        """Initialize the embedder with Amazon Titan embeddings."""
+        """Initialize the embedder with Bedrock embeddings."""
         self.embeddings = BedrockEmbeddings(
             client=boto3.client("bedrock-runtime", region_name=settings.AWS_REGION),
-            model_id="amazon.titan-embed-text-v2:0"
+            model_id=settings.BEDROCK_EMBEDDINGS_MODEL_ID
         )
         self.vectorstore: Optional[FAISS] = None
         self.vectorstore_path = Path(settings.VECTOR_STORE_PATH)

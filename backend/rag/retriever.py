@@ -60,23 +60,23 @@ class Retriever:
     def retrieve_with_scores(self, query: str, k: int = None) -> List[Tuple[Document, float]]:
         """
         Retrieve top k chunks with similarity scores using improved retrieval.
-        
+
         Args:
             query: User query string
             k: Number of chunks to retrieve
-            
+
         Returns:
             List of tuples (Document, similarity_score) sorted by relevance
         """
         if k is None:
             k = settings.TOP_K_CHUNKS
-        
+
         if not query or not query.strip():
             return []
-        
+
         try:
             keywords = self._extract_keywords(query)
-            retrieve_k = min(k * 3, 20)
+            retrieve_k = min(k * settings.RETRIEVER_EXPAND_K_MULTIPLIER, settings.RETRIEVER_MAX_K)
             expanded_query = self._expand_query(query)
             
             docs_with_scores = self.vectorstore.similarity_search_with_score(
