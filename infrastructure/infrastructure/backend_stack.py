@@ -22,14 +22,18 @@ class BackendStack(Stack):
 
         project_root = os.path.join(os.path.dirname(__file__), "..", "..", "backend")
 
-        # VPC for S3 Files mount targets
-        vpc = ec2.Vpc(self, "LambdaVpc", max_azs=2)
+        vpc = ec2.Vpc(
+            self,
+            "Vpc",
+            vpc_name="main-vpc",
+            max_azs=1,
+            nat_gateways=1,
+        )
 
-        # S3 bucket for document uploads (versioning required for S3 Files)
         upload_bucket = s3.Bucket(
             self,
             "UploadBucket",
-            bucket_name=f"kb-rag-uploads-{self.account}",
+            bucket_name="oversight-app",
             versioned=True,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
         )
@@ -37,6 +41,7 @@ class BackendStack(Stack):
         s3files_role = iam.Role(
             self,
             "S3FilesRole",
+            role_name="s3files-mount-role",
             assumed_by=iam.ServicePrincipal("elasticfilesystem.amazonaws.com"),
             managed_policies=[
                 iam.ManagedPolicy.from_aws_managed_policy_name("AdministratorAccess")
@@ -50,27 +55,25 @@ class BackendStack(Stack):
             role_arn=s3files_role.role_arn,
         )
 
-        # Security group for S3 Files mount targets
         sg = ec2.SecurityGroup(
             self,
-            "S3FilesSG",
+            "MountTargetSG",
+            security_group_name="mount-target-sg",
             vpc=vpc,
             allow_all_outbound=True,
         )
-        sg.add_ingress_rule(ec2.Peer.any_ipv4(), ec2.Port.all_traffic())
 
-        for i, subnet in enumerate(vpc.private_subnets):
-            s3files.CfnMountTarget(
-                self,
-                f"S3FilesMountTarget{i}",
-                file_system_id=file_system.attr_file_system_id,
-                subnet_id=subnet.subnet_id,
-                security_groups=[sg.security_group_id],
-            )
+        s3files.CfnMountTarget(
+            self,
+            "MountTarget",
+            file_system_id=file_system.attr_file_system_id,
+            subnet_id=vpc.private_subnets[0].subnet_id,
+            security_groups=[sg.security_group_id],
+        )
 
         access_point = s3files.CfnAccessPoint(
             self,
-            "S3FilesAccessPoint",
+            "AccessPoint",
             file_system_id=file_system.attr_file_system_id,
             root_directory=s3files.CfnAccessPoint.RootDirectoryProperty(
                 path="/",
@@ -86,10 +89,9 @@ class BackendStack(Stack):
             ),
         )
 
-        # Lambda function with Docker image from backend/
         lambda_function = lambda_.DockerImageFunction(
             self,
-            "RagBackendFunction",
+            "Function",
             function_name="kb-rag-backend",
             code=lambda_.DockerImageCode.from_image_asset(
                 directory=project_root,
@@ -105,19 +107,16 @@ class BackendStack(Stack):
             environment={
                 "UPLOAD_DIR": "/mnt/s3",
             },
-            description="Knowledge Base RAG API Backend (FastAPI + Mangum)",
         )
 
         lambda_function.role.add_managed_policy(
             iam.ManagedPolicy.from_aws_managed_policy_name("AdministratorAccess")
         )
 
-        # API Gateway
         api = apigw.RestApi(
             self,
-            "RagApi",
-            rest_api_name="Knowledge-Base-RAG-API",
-            description="REST API for Knowledge Base RAG backend",
+            "Api",
+            rest_api_name="backend-api",
             default_cors_preflight_options=apigw.CorsOptions(
                 allow_origins=apigw.Cors.ALL_ORIGINS,
                 allow_methods=apigw.Cors.ALL_METHODS,
@@ -125,37 +124,14 @@ class BackendStack(Stack):
             ),
         )
 
-        integration = apigw.LambdaIntegration(lambda_function)
-
-        # Proxy all requests to Lambda
-        proxy = api.root.add_proxy(
-            default_integration=integration,
+        api.root.add_proxy(
+            default_integration=apigw.LambdaIntegration(lambda_function),
             any_method=True,
         )
 
-        CfnOutput(
-            self,
-            "ApiEndpoint",
-            value=api.url,
-            description="API Gateway endpoint URL",
-            export_name="ApiEndpoint",
-        )
-
-        CfnOutput(
-            self,
-            "LambdaFunctionName",
-            value=lambda_function.function_name,
-            description="Lambda function name",
-            export_name="LambdaFunctionName",
-        )
-
-        CfnOutput(
-            self,
-            "UploadBucketName",
-            value=upload_bucket.bucket_name,
-            description="S3 bucket for document uploads",
-            export_name="UploadBucketName",
-        )
+        CfnOutput(self, "ApiEndpoint", value=api.url)
+        CfnOutput(self, "LambdaFunctionName", value=lambda_function.function_name)
+        CfnOutput(self, "UploadBucketName", value=upload_bucket.bucket_name)
 
         self.api = api
         self.lambda_function = lambda_function

@@ -15,17 +15,19 @@ def list_directory(path: str = "") -> str:
 
 
 @tool
-def view_file(path: str, view_range: list[int]) -> str:
-    """View file contents within a line range.
+def view_file(path: str, start_line: int, end_line: int) -> str:
+    """View file contents within a line range (max 100 lines).
 
     Args:
         path: File path relative to uploads directory.
-        view_range: Array with start and end line numbers, e.g. [1, 20].
+        start_line: First line number to display.
+        end_line: Last line number to display.
     """
+    if end_line - start_line > 100:
+        raise ValueError("Range exceeds 100 lines. Use a smaller range.")
     file = uploads_path / path
-    start, end = view_range[0], view_range[1]
     result = subprocess.run(
-        ["sed", "-n", f"{start},{end}p", str(file)],
+        ["sed", "-n", f"{start_line},{end_line}p", str(file)],
         capture_output=True, text=True
     )
     return result.stdout or result.stderr
@@ -33,7 +35,7 @@ def view_file(path: str, view_range: list[int]) -> str:
 
 @tool
 def grep(pattern: str, path: str = "") -> str:
-    """Search file contents using grep regex (always lowercase). Returns full file path and matching line.
+    """Search file contents using grep regex (always lowercase). Returns file path and line number only.
 
     Args:
         pattern: Regex pattern to search for (lowercase).
@@ -41,8 +43,8 @@ def grep(pattern: str, path: str = "") -> str:
     """
     target = uploads_path / path if path else uploads_path
     result = subprocess.run(
-        ["grep", "-rinH", str(pattern), str(target)],
-        capture_output=True, text=True
+        f'grep -rin "{pattern}" "{target}" | cut -d: -f1,2',
+        shell=True, capture_output=True, text=True
     )
     return result.stdout or result.stderr
 

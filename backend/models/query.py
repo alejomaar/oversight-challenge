@@ -3,7 +3,7 @@ Pydantic models for query operations.
 """
 
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict
 from datetime import datetime
 
 
@@ -34,7 +34,7 @@ class ConfidenceBreakdown(BaseModel):
 
 class QueryResponse(BaseModel):
     """Response model for query."""
-    answer: str
+    answer: Any
     sources: List[SourceInfo]
     confidence_score: float
     confidence_breakdown: Optional[ConfidenceBreakdown] = None
