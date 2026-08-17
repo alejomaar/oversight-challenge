@@ -42,9 +42,14 @@ class Settings(BaseSettings):
     CONFIDENCE_SCORE_WEIGHTS: str = "0.5:0.3:0.1:0.1"
     CONFIDENCE_SCORE_POWER: float = 0.9
 
+    # Database
+    DATABASE_URL: str = "postgresql+asyncpg://rag_user:rag_password@localhost:5432/rag_db"
+
     # File Upload Configuration
     MAX_FILE_SIZE: int = 50 * 1024 * 1024
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "./mnt")
+    RAW_DIR: str = "raw"
+    PROCESSED_DIR: str = "processed"
     ALLOWED_EXTENSIONS: str = ".pdf,.docx,.doc,.txt"
     SUPPORTED_FILE_EXTENSIONS: str = ".pdf,.docx,.doc,.txt"
     
@@ -59,5 +64,7 @@ settings = Settings()
 
 # Create necessary directories
 Path(settings.UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
+(Path(settings.UPLOAD_DIR) / settings.RAW_DIR).mkdir(parents=True, exist_ok=True)
+(Path(settings.UPLOAD_DIR) / settings.PROCESSED_DIR).mkdir(parents=True, exist_ok=True)
 Path(settings.VECTOR_STORE_PATH).mkdir(parents=True, exist_ok=True)
 
