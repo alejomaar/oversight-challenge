@@ -1,8 +1,8 @@
 """
 Standalone script to process a raw document:
-1. Convert to markdown with Docling (lightweight, no OCR)
-2. Save processed markdown to mnt/processed/
-3. Chunk with HybridChunker
+1. Extract text with pypdf
+2. Save processed text to mnt/processed/
+3. Chunk with RecursiveCharacterTextSplitter
 4. Embed each chunk with Bedrock Titan
 5. Save chunks to PostgreSQL (pgvector)
 
@@ -17,34 +17,21 @@ import asyncio
 from pathlib import Path
 
 import boto3
+from pypdf import PdfReader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sqlalchemy import text
-
-from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
-from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
-from docling.document_converter import DocumentConverter, PdfFormatOption
-from docling_core.transforms.chunker import HybridChunker
 
 sys.path.insert(0, str(Path(__file__).parent))
 from core.config import settings
 from db.session import engine
-from db.models import Chunk, Base
-
-
-pipeline_options = PdfPipelineOptions()
-pipeline_options.do_ocr = False
-pipeline_options.do_table_structure = False
-
-converter = DocumentConverter(
-    format_options={
-        InputFormat.PDF: PdfFormatOption(
-            pipeline_options=pipeline_options,
-            backend=PyPdfiumDocumentBackend
-        )
-    }
-)
+from db.models import Base
 
 bedrock = boto3.client("bedrock-runtime", region_name=settings.AWS_REGION)
+
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=settings.CHUNK_SIZE,
+    chunk_overlap=settings.CHUNK_OVERLAP,
+)
 
 
 def embed_text(text_input: str) -> list[float]:
@@ -67,55 +54,44 @@ async def process(file_path: str):
     document_id = raw_path.stem
     print(f"Processing: {raw_path.name}")
 
-    # 1. Convert document to markdown
-    print("  Converting to markdown...")
-    result = converter.convert(str(raw_path))
-    doc = result.document
-    markdown = doc.export_to_markdown()
+    # 1. Extract text
+    print("  Extracting text...")
+    reader = PdfReader(str(raw_path))
+    full_text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
 
-    # 2. Save processed markdown
+    # 2. Save processed text
     processed_path = Path(settings.UPLOAD_DIR) / settings.PROCESSED_DIR / f"{document_id}.md"
     processed_path.parent.mkdir(parents=True, exist_ok=True)
-    processed_path.write_text(markdown, encoding="utf-8")
+    processed_path.write_text(full_text, encoding="utf-8")
     print(f"  Saved: {processed_path}")
 
-    # 3. Chunk with HybridChunker
+    # 3. Chunk
     print("  Chunking...")
-    chunker = HybridChunker(max_tokens=512, merge_peers=True)
-    chunks = list(chunker.chunk(dl_doc=doc))
+    chunks = text_splitter.split_text(full_text)
     print(f"  Generated {len(chunks)} chunks")
 
     # 4. Embed and save to database
     print("  Embedding and saving to database...")
     async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
 
-        for i, chunk in enumerate(chunks):
+        for i, chunk_text in enumerate(chunks):
             chunk_id = str(uuid.uuid4())
-            embedding = embed_text(chunk.text)
-
-            page_numbers = set()
-            if hasattr(chunk.meta, "doc_items") and chunk.meta.doc_items:
-                for item in chunk.meta.doc_items:
-                    if item.prov:
-                        for prov in item.prov:
-                            page_numbers.add(prov.page_no)
-
-            page_start = min(page_numbers) if page_numbers else None
-            page_end = max(page_numbers) if page_numbers else None
+            embedding = embed_text(chunk_text)
 
             await conn.execute(
                 text("""
-                    INSERT INTO chunk (chunk_id, document_id, text, embedding, page_start, page_end)
-                    VALUES (:chunk_id, :document_id, :text, :embedding, :page_start, :page_end)
+                    INSERT INTO chunk (chunk_id, document_id, text, embedding, char_start, char_end)
+                    VALUES (:chunk_id, :document_id, :text, :embedding, :char_start, :char_end)
                 """),
                 {
                     "chunk_id": chunk_id,
                     "document_id": document_id,
-                    "text": chunk.text,
+                    "text": chunk_text,
                     "embedding": str(embedding),
-                    "page_start": page_start,
-                    "page_end": page_end,
+                    "char_start": full_text.find(chunk_text),
+                    "char_end": full_text.find(chunk_text) + len(chunk_text),
                 }
             )
 

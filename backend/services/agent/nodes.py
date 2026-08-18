@@ -1,12 +1,15 @@
+import logging
 from typing import Literal
 
-from langchain_core.messages import SystemMessage
+from core.config import settings
 from langchain_aws import ChatBedrockConverse
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
 
-from core.config import settings
-from .state import AgentState
+from .state import AgentState, GroundedAnswer
 from .tools import TOOLS
+
+logger = logging.getLogger(__name__)
 
 
 llm = ChatBedrockConverse(
@@ -19,8 +22,7 @@ llm = ChatBedrockConverse(
 
 async def responder(state: AgentState) -> Command[Literal["tools", "__end__"]]:
     """Responder node that decides whether to use tools or end."""
-    system_prompt = SystemMessage(
-        content="""<persona>
+    system_prompt = SystemMessage(content="""<persona>
 You are a document analyst assistant. You answer questions strictly based on the uploaded files.
 </persona>
 
@@ -35,15 +37,24 @@ Answer the user's question using only the content found in the uploaded files. N
 </tools>
 
 <output>
-Provide a clear, concise answer grounded in the file contents. If the information is not found in any file, say so.
-</output>"""
-    )
+When you have enough information, provide a grounded answer with citations and a confidence score.
+Do not mention citations in the answer itself. Include only the exact S3 object keys actually used to form the answer.
+If the information is not found, say so in the answer, provide no citations, and use a low confidence score.
+</output>""")
     messages = [system_prompt] + state.messages
 
     llm_with_tools = llm.bind_tools(TOOLS)
     response = await llm_with_tools.ainvoke(messages)
 
     if response.tool_calls:
-        return Command(goto="tools", update={"messages": [response]})
+        return Command(
+            goto="tools",
+            update={"messages": [response]},
+        )
 
-    return Command(goto="__end__", update={"messages": [response]})
+    return Command(
+        goto="__end__",
+        update={
+            "messages": [response],
+        },
+    )

@@ -28,9 +28,6 @@ class Settings(BaseSettings):
     BEDROCK_EMBEDDINGS_MODEL_ID: str = "amazon.titan-embed-text-v2:0"
     BEDROCK_LLM_MODEL_ID: str = "openai.gpt-oss-20b-1:0"
 
-    # Vector Store Configuration
-    VECTOR_STORE_PATH: str = "/tmp/vectorstore"
-
     # RAG Configuration
     CHUNK_SIZE: int = 1000
     CHUNK_OVERLAP: int = 200
@@ -43,7 +40,7 @@ class Settings(BaseSettings):
     CONFIDENCE_SCORE_POWER: float = 0.9
 
     # Database
-    DATABASE_URL: str = "postgresql+asyncpg://rag_user:rag_password@localhost:5432/rag_db"
+    DATABASE_URL: str
 
     # File Upload Configuration
     MAX_FILE_SIZE: int = 50 * 1024 * 1024
@@ -66,5 +63,3 @@ settings = Settings()
 Path(settings.UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
 (Path(settings.UPLOAD_DIR) / settings.RAW_DIR).mkdir(parents=True, exist_ok=True)
 (Path(settings.UPLOAD_DIR) / settings.PROCESSED_DIR).mkdir(parents=True, exist_ok=True)
-Path(settings.VECTOR_STORE_PATH).mkdir(parents=True, exist_ok=True)
-

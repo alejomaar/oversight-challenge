@@ -1,15 +1,18 @@
 import os
+import string
 
 from aws_cdk import (
     Stack,
     CfnOutput,
     Duration,
+    RemovalPolicy,
 )
 from aws_cdk import aws_apigateway as apigw
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecr_assets as ecr_assets
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_rds as rds
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3files as s3files
 from constructs import Construct
@@ -25,23 +28,52 @@ class BackendStack(Stack):
         vpc = ec2.Vpc(
             self,
             "Vpc",
-            vpc_name="main-vpc",
-            max_azs=1,
+            max_azs=2,
             nat_gateways=1,
+        )
+
+        database = rds.DatabaseInstance(
+            self,
+            "Database",
+            engine=rds.DatabaseInstanceEngine.postgres(
+                version=rds.PostgresEngineVersion.VER_16,
+            ),
+            database_name="rag_db",
+            credentials=rds.Credentials.from_generated_secret(
+                "rag_user",
+                # Secrets Manager requires every enabled character type. Keep
+                # one URL-safe punctuation character available for passwords.
+                exclude_characters=string.punctuation.replace("_", ""),
+            ),
+            instance_type=ec2.InstanceType.of(
+                ec2.InstanceClass.BURSTABLE4_GRAVITON,
+                ec2.InstanceSize.MICRO,
+            ),
+            vpc=vpc,
+            vpc_subnets=ec2.SubnetSelection(
+                subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS,
+            ),
+            allocated_storage=20,
+            storage_encrypted=True,
+            multi_az=False,
+            publicly_accessible=False,
+            backup_retention=Duration.days(0),
+            deletion_protection=False,
+            removal_policy=RemovalPolicy.DESTROY,
         )
 
         upload_bucket = s3.Bucket(
             self,
             "UploadBucket",
-            bucket_name="oversight-app",
             versioned=True,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            removal_policy=RemovalPolicy.DESTROY,
+            auto_delete_objects=True,
         )
 
         s3files_role = iam.Role(
             self,
             "S3FilesRole",
-            role_name="s3files-mount-role",
             assumed_by=iam.ServicePrincipal("elasticfilesystem.amazonaws.com"),
             managed_policies=[
                 iam.ManagedPolicy.from_aws_managed_policy_name("AdministratorAccess")
@@ -58,18 +90,18 @@ class BackendStack(Stack):
         sg = ec2.SecurityGroup(
             self,
             "MountTargetSG",
-            security_group_name="mount-target-sg",
             vpc=vpc,
             allow_all_outbound=True,
         )
 
-        s3files.CfnMountTarget(
-            self,
-            "MountTarget",
-            file_system_id=file_system.attr_file_system_id,
-            subnet_id=vpc.private_subnets[0].subnet_id,
-            security_groups=[sg.security_group_id],
-        )
+        for index, subnet in enumerate(vpc.private_subnets):
+            s3files.CfnMountTarget(
+                self,
+                f"MountTarget{index + 1}",
+                file_system_id=file_system.attr_file_system_id,
+                subnet_id=subnet.subnet_id,
+                security_groups=[sg.security_group_id],
+            )
 
         access_point = s3files.CfnAccessPoint(
             self,
@@ -92,7 +124,6 @@ class BackendStack(Stack):
         lambda_function = lambda_.DockerImageFunction(
             self,
             "Function",
-            function_name="kb-rag-backend",
             code=lambda_.DockerImageCode.from_image_asset(
                 directory=project_root,
                 platform=ecr_assets.Platform.LINUX_AMD64,
@@ -106,8 +137,15 @@ class BackendStack(Stack):
             ),
             environment={
                 "UPLOAD_DIR": "/mnt/s3",
+                "DATABASE_URL": f"postgresql+asyncpg://rag_user:"
+                f"{database.secret.secret_value_from_json('password').unsafe_unwrap()}@"
+                f"{database.db_instance_endpoint_address}:"
+                f"{database.db_instance_endpoint_port}/rag_db",
             },
         )
+
+        database.connections.allow_default_port_from(lambda_function)
+        database.secret.grant_read(lambda_function)
 
         lambda_function.role.add_managed_policy(
             iam.ManagedPolicy.from_aws_managed_policy_name("AdministratorAccess")
@@ -132,6 +170,7 @@ class BackendStack(Stack):
         CfnOutput(self, "ApiEndpoint", value=api.url)
         CfnOutput(self, "LambdaFunctionName", value=lambda_function.function_name)
         CfnOutput(self, "UploadBucketName", value=upload_bucket.bucket_name)
+        CfnOutput(self, "DatabaseEndpoint", value=database.db_instance_endpoint_address)
 
         self.api = api
         self.lambda_function = lambda_function

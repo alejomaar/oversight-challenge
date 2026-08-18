@@ -1,9 +1,26 @@
+import json
 import subprocess
 from pathlib import Path
-from langchain_core.tools import tool
+
+import boto3
 from core.config import settings
+from db.session import engine
+from langchain_core.tools import tool
+from sqlalchemy import text
 
 uploads_path = Path(settings.UPLOAD_DIR)
+bedrock = boto3.client("bedrock-runtime", region_name=settings.AWS_REGION)
+
+
+def _embed_query(query: str) -> list[float]:
+    response = bedrock.invoke_model(
+        modelId=settings.BEDROCK_EMBEDDINGS_MODEL_ID,
+        contentType="application/json",
+        accept="application/json",
+        body=json.dumps({"inputText": query}),
+    )
+    result = json.loads(response["body"].read())
+    return result["embedding"]
 
 
 @tool
@@ -16,37 +33,82 @@ def list_directory(path: str = "") -> str:
 
 @tool
 def view_file(path: str, start_line: int, end_line: int) -> str:
-    """View file contents within a line range (max 100 lines).
+    """View file contents within a line range (max 50 lines).
 
     Args:
         path: File path relative to uploads directory.
         start_line: First line number to display.
         end_line: Last line number to display.
     """
-    if end_line - start_line > 100:
-        raise ValueError("Range exceeds 100 lines. Use a smaller range.")
+    if end_line - start_line > 50:
+        raise ValueError("Range exceeds 50 lines. Use a smaller range.")
     file = uploads_path / path
     result = subprocess.run(
         ["sed", "-n", f"{start_line},{end_line}p", str(file)],
-        capture_output=True, text=True
+        capture_output=True,
+        text=True,
     )
     return result.stdout or result.stderr
 
 
 @tool
-def grep(pattern: str, path: str = "") -> str:
-    """Search file contents using grep regex (always lowercase). Returns file path and line number only.
+def keyword_search(pattern: str, path: str = "") -> str:
+    """Search documents for specific keywords using a grep-like regex query. Returns matching file paths and line numbers.
 
     Args:
-        pattern: Regex pattern to search for (lowercase).
+        pattern: Grep-style regex pattern to search for (case-insensitive).
         path: Directory to search in, relative to uploads. Defaults to uploads root.
     """
     target = uploads_path / path if path else uploads_path
     result = subprocess.run(
         f'grep -rin "{pattern}" "{target}" | cut -d: -f1,2',
-        shell=True, capture_output=True, text=True
+        shell=True,
+        capture_output=True,
+        text=True,
     )
     return result.stdout or result.stderr
 
 
-TOOLS = [list_directory, view_file, grep]
+@tool
+async def semantic_search(concept: str) -> str:
+    """Search the knowledge base for documents relevant to a high-level topic, concept, or question. Returns the most semantically similar document chunks.
+
+    Args:
+        concept: The topic, concept, or question to search for.
+    """
+    embedding = _embed_query(concept)
+
+    async with engine.begin() as conn:
+        result = await conn.execute(
+            text("""
+                SELECT text, document_id, 1 - (embedding <=> cast(:embedding as vector)) AS similarity
+                FROM chunk
+                ORDER BY embedding <=> cast(:embedding as vector)
+                LIMIT 4
+            """),
+            {"embedding": str(embedding)},
+        )
+        rows = result.fetchall()
+
+    if not rows:
+        return "No relevant chunks found in the knowledge base."
+
+    answer = json.dumps(
+        [
+            {
+                "document_id": row.document_id,
+                "similarity": round(row.similarity * 100),
+                "text": row.text,
+            }
+            for row in rows
+        ]
+    )
+    print("== RAG Start==")
+    print(answer)
+    print("== RAG End==")
+
+    return answer
+
+
+TOOLS = [list_directory, view_file, keyword_search]
+# TOOLS = [ semantic_search]

@@ -9,7 +9,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from core.config import settings
-from api.routes import upload, query, files, health, chunks
+from api.routes import upload, query, files, health
 
 # Setup logging
 logging.basicConfig(
@@ -59,7 +59,6 @@ app.include_router(health.router, prefix="/api/health", tags=["Health"])
 app.include_router(upload.router, prefix="/api/upload", tags=["Upload"])
 app.include_router(query.router, prefix="/api/query", tags=["Query"])
 app.include_router(files.router, prefix="/api/files", tags=["Files"])
-app.include_router(chunks.router, prefix="/api/chunks", tags=["Chunks"])
 
 
 @app.get("/")
@@ -70,4 +69,3 @@ async def root():
         "version": "1.0.0",
         "status": "running"
     }
-
