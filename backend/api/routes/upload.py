@@ -135,7 +135,7 @@ async def upload_file(file: UploadFile = File(...)):
 
     ingest(file.filename, content)
     text = transform(file.filename, content)
-    #chunks_count = await index(document_id, text)
+    chunks_count = await index(document_id, text)
 
     return FileUploadResponse(
         file_id=file_id,

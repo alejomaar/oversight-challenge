@@ -22,7 +22,19 @@ async def query_knowledge_base(request: QueryRequest):
     The agent can use the list_files tool to answer questions about uploaded documents.
     """
     result = await agent.ainvoke({"messages": [HumanMessage(content=request.question)]})
-    final_message = result["messages"][-1].content[-1]["text"]
+    content = result["messages"][-1].content
+
+
+    if isinstance(content, str):
+        final_message = content
+    elif isinstance(content, list):
+        final_message = "".join(
+            block["text"]
+            for block in content
+            if isinstance(block, dict) and "text" in block
+        )
+    else:
+        final_message = str(content)
 
     return QueryResponse(
         answer=final_message,

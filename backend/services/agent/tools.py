@@ -1,4 +1,7 @@
+import asyncio
+import functools
 import json
+import logging
 import subprocess
 from pathlib import Path
 
@@ -8,8 +11,35 @@ from db.session import engine
 from langchain_core.tools import tool
 from sqlalchemy import text
 
+logger = logging.getLogger(__name__)
+
 uploads_path = Path(settings.UPLOAD_DIR)
 bedrock = boto3.client("bedrock-runtime", region_name=settings.AWS_REGION)
+
+
+def log_errors(func):
+    """Log an exception raised by a tool before letting it propagate."""
+    if asyncio.iscoroutinefunction(func):
+
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            try:
+                return await func(*args, **kwargs)
+            except Exception:
+                logger.exception("Tool %s failed", func.__name__)
+                raise
+
+        return async_wrapper
+
+    @functools.wraps(func)
+    def sync_wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception:
+            logger.exception("Tool %s failed", func.__name__)
+            raise
+
+    return sync_wrapper
 
 
 def _embed_query(query: str) -> list[float]:
@@ -24,6 +54,7 @@ def _embed_query(query: str) -> list[float]:
 
 
 @tool
+@log_errors
 def list_directory(path: str = "") -> str:
     """List files in a directory. Defaults to the uploads directory."""
     target = uploads_path / path if path else uploads_path
@@ -32,6 +63,7 @@ def list_directory(path: str = "") -> str:
 
 
 @tool
+@log_errors
 def view_file(path: str, start_line: int, end_line: int) -> str:
     """View file contents within a line range (max 50 lines).
 
@@ -52,6 +84,7 @@ def view_file(path: str, start_line: int, end_line: int) -> str:
 
 
 @tool
+@log_errors
 def keyword_search(pattern: str, path: str = "") -> str:
     """Search documents for specific keywords using a grep-like regex query. Returns matching file paths and line numbers.
 
@@ -70,6 +103,7 @@ def keyword_search(pattern: str, path: str = "") -> str:
 
 
 @tool
+@log_errors
 async def semantic_search(concept: str) -> str:
     """Search the knowledge base for documents relevant to a high-level topic, concept, or question. Returns the most semantically similar document chunks.
 
@@ -110,5 +144,5 @@ async def semantic_search(concept: str) -> str:
     return answer
 
 
-TOOLS = [list_directory, view_file, keyword_search]
+TOOLS = [list_directory, view_file, keyword_search, semantic_search]
 # TOOLS = [ semantic_search]

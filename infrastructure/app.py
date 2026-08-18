@@ -2,27 +2,24 @@
 import os
 
 import aws_cdk as cdk
+from aws_cdk import Tags
 
-from infrastructure.backend_stack import BackendStack
-from infrastructure.frontend_stack import FrontendStack
+from infrastructure.shared.network_stack import NetworkStack
+from infrastructure.workloads.rag_chat.backend_stack import BackendStack
+from infrastructure.workloads.rag_chat.frontend_stack import FrontendStack
 
 
 app = cdk.App()
 
-env = cdk.Environment(account=os.getenv('CDK_DEFAULT_ACCOUNT'), region=os.getenv('CDK_DEFAULT_REGION'))
-
-# Backend: Lambda (Docker) + API Gateway + S3 Files (deploy first)
-backend_stack = BackendStack(app, "BackendStack", env=env)
-
-# Frontend: S3 + CloudFront (with backend API URL from backend stack)
-frontend_stack = FrontendStack(
-    app,
-    "FrontendStack",
-    backend_api_url=backend_stack.api.url,
-    env=env
+env = cdk.Environment(
+    account=os.getenv("CDK_DEFAULT_ACCOUNT"),
+    region=os.getenv("CDK_DEFAULT_REGION"),
 )
 
-# Frontend depends on backend being deployed
-frontend_stack.add_dependency(backend_stack)
+network_stack = NetworkStack(app, "SharedNetworkStack", env=env)
+backend_stack = BackendStack(app, "RagChatBackendStack", env=env)
+frontend_stack = FrontendStack(app, "RagChatFrontendStack", env=env)
+
+Tags.of(app).add("project", "challenge")
 
 app.synth()

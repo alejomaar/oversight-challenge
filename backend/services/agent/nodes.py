@@ -5,8 +5,8 @@ from core.config import settings
 from langchain_aws import ChatBedrockConverse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
-
-from .state import AgentState, GroundedAnswer
+import pprint
+from .state import AgentState
 from .tools import TOOLS
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,7 @@ Answer the user's question using only the content found in the uploaded files. N
 </task>
 
 <tools>
+- semantic_search: Searches the knowledge base for relevant information. ALWAYS use this tool first for knowledge-base questions. Prefer it over all other tools. Use the other tools only when semantic_search does not provide enough information or when exact file-level inspection is required.
 - list_directory: Lists files in a directory. Use it first to discover available files.
 - view_file: Reads specific lines from a file. Use it to inspect file contents.
 - grep: Searches file contents with regex. Use it to locate relevant information across files.
@@ -45,7 +46,7 @@ If the information is not found, say so in the answer, provide no citations, and
 
     llm_with_tools = llm.bind_tools(TOOLS)
     response = await llm_with_tools.ainvoke(messages)
-
+    pprint.pprint(response)
     if response.tool_calls:
         return Command(
             goto="tools",
