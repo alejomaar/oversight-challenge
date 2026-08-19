@@ -1,7 +1,7 @@
 import logging
 from typing import Literal
 
-from core.config import settings
+from config.settings import settings
 from langchain_aws import ChatBedrockConverse
 from langchain_core.messages import SystemMessage
 from langgraph.types import Command

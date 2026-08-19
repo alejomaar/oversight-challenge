@@ -8,8 +8,8 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 import logging
 from contextlib import asynccontextmanager
 
-from core.config import settings
-from api.routes import upload, query, files, health
+from config.settings import settings
+from api import upload, query, files, health
 
 # Setup logging
 logging.basicConfig(

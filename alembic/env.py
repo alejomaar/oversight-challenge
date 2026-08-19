@@ -9,12 +9,12 @@ from sqlalchemy import pool
 from alembic import context
 
 # Migrations live outside the service, but the schema they target is defined by
-# the service's models. `backend/` is added to the path so `db.models` imports
-# the same way it does inside the app.
+# the service's models. `backend/` is added to the path so `models`
+# imports the same way it does inside the app.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
-from db.models import Base  # noqa: E402
+from models import Base  # noqa: E402
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

@@ -1,24 +1,20 @@
 """
-Query endpoints for RAG system.
+Answering questions over the knowledge base via the ReAct agent, and
+knowledge-base-wide chunk counting.
 """
 
-import logging
 import time
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter
 from langchain_core.messages import HumanMessage
 from sqlalchemy import func, select
 
-from core.config import settings
-from db.models import Chunk
-from db.session import db_session
-from models.query import ConfidenceBreakdown, QueryMetadata, QueryRequest, QueryResponse, SourceHit
+from config.settings import settings
+from models import Chunk
+from infrastructure.db import db_session
+from schemas.api.query import ConfidenceBreakdown, QueryMetadata, QueryResponse, SourceHit
 from services.agent import agent
-
-router = APIRouter()
-logger = logging.getLogger(__name__)
 
 
 def _confidence_breakdown(scores: list[float], keyword_score: float) -> ConfidenceBreakdown:
@@ -43,10 +39,8 @@ def _confidence_breakdown(scores: list[float], keyword_score: float) -> Confiden
     )
 
 
-@router.post("/", response_model=QueryResponse)
-async def query_knowledge_base(request: QueryRequest):
-    """
-    Query using the ReAct agent with tool access.
+async def answer_question(question: str, top_k: int, explain_like_10: bool) -> QueryResponse:
+    """Run the ReAct agent over the knowledge base and build a grounded, cited answer.
 
     The agent can use semantic_search, keyword_search, list_documents, and
     read_document to answer questions about the knowledge base.
@@ -54,13 +48,13 @@ async def query_knowledge_base(request: QueryRequest):
     request_id = str(uuid.uuid4())
     started = time.perf_counter()
 
-    result = await agent.ainvoke({"messages": [HumanMessage(content=request.question)]})
+    result = await agent.ainvoke({"messages": [HumanMessage(content=question)]})
     content = result["messages"][-1].content
 
     keyword_matches = result["keyword_matches"]
     keyword_score = max(keyword_matches.values(), default=0.0)
 
-    top_hits = sorted(result["semantic_matches"].values(), key=lambda hit: hit["similarity"], reverse=True)[:request.top_k]
+    top_hits = sorted(result["semantic_matches"].values(), key=lambda hit: hit["similarity"], reverse=True)[:top_k]
     similarity_scores = [hit["similarity"] for hit in top_hits]
     breakdown = _confidence_breakdown(similarity_scores, keyword_score)
 
@@ -89,9 +83,9 @@ async def query_knowledge_base(request: QueryRequest):
         confidence_score=breakdown.final_score,
         confidence_breakdown=breakdown,
         similarity_scores=similarity_scores,
-        query=request.question,
+        query=question,
         timestamp=datetime.now(),
-        explain_mode=request.explain_like_10,
+        explain_mode=explain_like_10,
         metadata=QueryMetadata(
             model=settings.BEDROCK_LLM_MODEL_ID,
             retrieval_strategy="semantic_search+keyword_search" if keyword_matches else "semantic_search",
@@ -101,9 +95,8 @@ async def query_knowledge_base(request: QueryRequest):
     )
 
 
-@router.get("/count")
-async def count_chunks():
+async def count_chunks() -> int:
     """Count the number of chunks in the knowledge base."""
     async with db_session() as session:
         result = await session.execute(select(func.count()).select_from(Chunk))
-        return {"count": result.scalar_one()}
+        return result.scalar_one()

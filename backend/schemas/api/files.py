@@ -2,8 +2,7 @@
 Pydantic models for file operations.
 """
 
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel
 from datetime import datetime
 
 
@@ -27,8 +26,6 @@ class FileInfo(BaseModel):
     file_type: str
     s3_key: str
     uploaded_at: datetime
-    processed: bool = False
-    chunk_count: Optional[int] = None
 
 
 class FileListResponse(BaseModel):
@@ -43,4 +40,3 @@ class FileDeleteResponse(BaseModel):
     filename: str
     deleted: bool
     message: str
-

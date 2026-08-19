@@ -7,12 +7,13 @@ need no filesystem and no shell. Original uploads stay in S3 for provenance.
 
 import json
 import logging
+import uuid
 from typing import Annotated
 
 import boto3
-from core.config import settings
-from db.models import Chunk
-from db.session import db_session
+from config.settings import settings
+from models import Chunk, Document
+from infrastructure.db import db_session
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.types import Command
@@ -54,7 +55,7 @@ async def semantic_search(
 
     async with db_session() as session:
         result = await session.execute(
-            select(Chunk.chunk_id, Chunk.document_id, Chunk.text, (1 - distance).label("similarity"))
+            select(Chunk.id, Chunk.document_id, Chunk.content, (1 - distance).label("similarity"))
             .order_by(distance)
             .limit(min(top_k, 20))
         )
@@ -71,20 +72,20 @@ async def semantic_search(
     # State keeps only an excerpt per chunk (for the response's sources list);
     # the model gets the full text so it can actually answer from it.
     hits = {
-        row.chunk_id: {
-            "chunk_id": row.chunk_id,
-            "document_id": row.document_id,
+        str(row.id): {
+            "chunk_id": str(row.id),
+            "document_id": str(row.document_id),
             "similarity": round(row.similarity, 3),
-            "excerpt": row.text[:280],
+            "excerpt": row.content[:280],
         }
         for row in rows
     }
     model_view = [
         {
-            "chunk_id": row.chunk_id,
-            "document_id": row.document_id,
+            "chunk_id": str(row.id),
+            "document_id": str(row.document_id),
             "similarity": round(row.similarity, 3),
-            "text": row.text,
+            "text": row.content,
         }
         for row in rows
     ]
@@ -105,14 +106,14 @@ async def keyword_search(
     Args:
         pattern: POSIX regex, for example "refund|reimburse" or "SLA of [0-9]+%".
     """
-    matches = Chunk.text.op("~*")(pattern)
+    matches = Document.content.op("~*")(pattern)
 
     async with db_session() as session:
         await session.execute(text(f"SET LOCAL statement_timeout = {SEARCH_TIMEOUT_MS}"))
         result = await session.execute(
-            select(Chunk.chunk_id, Chunk.document_id, Chunk.text)
+            select(Document.id, Document.file_name, Document.content)
             .where(matches)
-            .order_by(Chunk.document_id, Chunk.char_start)
+            .order_by(Document.id)
             .limit(10)
         )
         rows = result.fetchall()
@@ -126,22 +127,22 @@ async def keyword_search(
             })
 
         docs_matched = (await session.execute(
-            select(func.count(func.distinct(Chunk.document_id))).where(matches)
+            select(func.count()).select_from(Document).where(matches)
         )).scalar_one()
         total_docs = (await session.execute(
-            select(func.count(func.distinct(Chunk.document_id)))
+            select(func.count()).select_from(Document)
         )).scalar_one()
 
     # A term matched in nearly every document is a weak signal; a rare, specific
     # match is a strong one.
     score = round(1 - (docs_matched / total_docs), 3) if total_docs else 0.0
-    keyword_matches = {row.document_id: score for row in rows}
+    keyword_matches = {str(row.id): score for row in rows}
 
     model_view = [
         {
-            "chunk_id": row.chunk_id,
-            "document_id": row.document_id,
-            "text": row.text,
+            "document_id": str(row.id),
+            "file_name": row.file_name,
+            "excerpt": row.content[:280],
         }
         for row in rows
     ]
@@ -163,9 +164,10 @@ async def list_documents(offset: int = 0, limit: int = 20) -> str:
     capped_limit = min(limit, 200)
     async with db_session() as session:
         result = await session.execute(
-            select(Chunk.document_id, func.count().label("chunks"))
-            .group_by(Chunk.document_id)
-            .order_by(Chunk.document_id)
+            select(Document.id, Document.file_name, func.count(Chunk.id).label("chunks"))
+            .outerjoin(Chunk, Chunk.document_id == Document.id)
+            .group_by(Document.id)
+            .order_by(Document.id)
             .offset(max(offset, 0))
             .limit(capped_limit + 1)
         )
@@ -179,7 +181,7 @@ async def list_documents(offset: int = 0, limit: int = 20) -> str:
 
     return json.dumps({
         "documents": [
-            {"document_id": row.document_id, "chunks": row.chunks}
+            {"document_id": str(row.id), "file_name": row.file_name, "chunks": row.chunks}
             for row in rows
         ],
         "has_more": has_more,
@@ -197,9 +199,9 @@ async def read_document(document_id: str, start_chunk: int = 0, limit: int = 5) 
     """
     async with db_session() as session:
         result = await session.execute(
-            select(Chunk.chunk_id, Chunk.text)
-            .where(Chunk.document_id == document_id)
-            .order_by(Chunk.char_start)
+            select(Chunk.id, Chunk.content)
+            .where(Chunk.document_id == uuid.UUID(document_id))
+            .order_by(Chunk.chunk_index)
             .offset(max(start_chunk, 0))
             .limit(min(limit, 10))
         )
@@ -209,7 +211,7 @@ async def read_document(document_id: str, start_chunk: int = 0, limit: int = 5) 
         return f"No chunks found for document {document_id!r}."
 
     return json.dumps([
-        {"chunk_id": row.chunk_id, "text": row.text}
+        {"chunk_id": str(row.id), "text": row.content}
         for row in rows
     ])
 
