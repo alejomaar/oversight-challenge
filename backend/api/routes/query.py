@@ -8,11 +8,12 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter
-from langchain_core.messages import AIMessage, HumanMessage
-from sqlalchemy import text as sql_text
+from langchain_core.messages import HumanMessage
+from sqlalchemy import func, select
 
 from core.config import settings
-from db.session import engine
+from db.models import Chunk
+from db.session import db_session
 from models.query import ConfidenceBreakdown, QueryMetadata, QueryRequest, QueryResponse, SourceHit
 from services.agent import agent
 
@@ -20,7 +21,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def _confidence_breakdown(scores: list[float], used_keyword_search: bool) -> ConfidenceBreakdown:
+def _confidence_breakdown(scores: list[float], keyword_score: float) -> ConfidenceBreakdown:
     if not scores:
         return ConfidenceBreakdown(
             best_similarity=0.0, avg_similarity=0.0, consistency=0.0,
@@ -30,7 +31,7 @@ def _confidence_breakdown(scores: list[float], used_keyword_search: bool) -> Con
     best = max(scores)
     avg = sum(scores) / len(scores)
     consistency = round(1.0 - (best - min(scores)), 3)
-    keyword_match = 1.0 if used_keyword_search else 0.0
+    keyword_match = keyword_score
     final_score = round(0.5 * best + 0.3 * avg + 0.1 * consistency + 0.1 * keyword_match, 3)
 
     return ConfidenceBreakdown(
@@ -56,15 +57,12 @@ async def query_knowledge_base(request: QueryRequest):
     result = await agent.ainvoke({"messages": [HumanMessage(content=request.question)]})
     content = result["messages"][-1].content
 
-    used_keyword_search = any(
-        isinstance(message, AIMessage)
-        and any(call["name"] == "keyword_search" for call in message.tool_calls)
-        for message in result["messages"]
-    )
+    keyword_matches = result["keyword_matches"]
+    keyword_score = max(keyword_matches.values(), default=0.0)
 
-    top_hits = sorted(result["hits"].values(), key=lambda hit: hit["similarity"], reverse=True)[:request.top_k]
+    top_hits = sorted(result["semantic_matches"].values(), key=lambda hit: hit["similarity"], reverse=True)[:request.top_k]
     similarity_scores = [hit["similarity"] for hit in top_hits]
-    breakdown = _confidence_breakdown(similarity_scores, used_keyword_search)
+    breakdown = _confidence_breakdown(similarity_scores, keyword_score)
 
     if isinstance(content, str):
         final_message = content
@@ -96,7 +94,7 @@ async def query_knowledge_base(request: QueryRequest):
         explain_mode=request.explain_like_10,
         metadata=QueryMetadata(
             model=settings.BEDROCK_LLM_MODEL_ID,
-            retrieval_strategy="semantic_search+keyword_search" if used_keyword_search else "semantic_search",
+            retrieval_strategy="semantic_search+keyword_search" if keyword_matches else "semantic_search",
             request_id=request_id,
             latency_ms=int((time.perf_counter() - started) * 1000),
         ),
@@ -106,6 +104,6 @@ async def query_knowledge_base(request: QueryRequest):
 @router.get("/count")
 async def count_chunks():
     """Count the number of chunks in the knowledge base."""
-    async with engine.connect() as conn:
-        result = await conn.execute(sql_text("SELECT COUNT(*) FROM chunk"))
+    async with db_session() as session:
+        result = await session.execute(select(func.count()).select_from(Chunk))
         return {"count": result.scalar_one()}

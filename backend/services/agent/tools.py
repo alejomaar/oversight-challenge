@@ -11,11 +11,12 @@ from typing import Annotated
 
 import boto3
 from core.config import settings
-from db.session import engine
+from db.models import Chunk
+from db.session import db_session
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.types import Command
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 
 logger = logging.getLogger(__name__)
 
@@ -49,17 +50,13 @@ async def semantic_search(
         top_k: How many chunks to return (max 20).
     """
     embedding = _embed_query(concept)
+    distance = Chunk.embedding.cosine_distance(embedding)
 
-    async with engine.connect() as conn:
-        result = await conn.execute(
-            text("""
-                SELECT chunk_id, document_id, text,
-                       1 - (embedding <=> cast(:embedding as vector)) AS similarity
-                FROM chunk
-                ORDER BY embedding <=> cast(:embedding as vector)
-                LIMIT :limit
-            """),
-            {"embedding": str(embedding), "limit": min(top_k, 20)},
+    async with db_session() as session:
+        result = await session.execute(
+            select(Chunk.chunk_id, Chunk.document_id, Chunk.text, (1 - distance).label("similarity"))
+            .order_by(distance)
+            .limit(min(top_k, 20))
         )
         rows = result.fetchall()
 
@@ -93,43 +90,66 @@ async def semantic_search(
     ]
 
     return Command(update={
-        "hits": hits,
+        "semantic_matches": hits,
         "messages": [ToolMessage(content=json.dumps(model_view), tool_call_id=tool_call_id)],
     })
 
 
 @tool
-async def keyword_search(pattern: str) -> str:
+async def keyword_search(
+    pattern: str,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
     """Search document text with a case-insensitive POSIX regular expression, across every document in the knowledge base. Use it for exact terms, codes, or phrasing that semantic search may miss.
 
     Args:
         pattern: POSIX regex, for example "refund|reimburse" or "SLA of [0-9]+%".
     """
-    async with engine.begin() as conn:
-        await conn.execute(text(f"SET LOCAL statement_timeout = {SEARCH_TIMEOUT_MS}"))
-        result = await conn.execute(
-            text("""
-                SELECT chunk_id, document_id, text
-                FROM chunk
-                WHERE text ~* :pattern
-                ORDER BY document_id, char_start
-                LIMIT 10
-            """),
-            {"pattern": pattern},
+    matches = Chunk.text.op("~*")(pattern)
+
+    async with db_session() as session:
+        await session.execute(text(f"SET LOCAL statement_timeout = {SEARCH_TIMEOUT_MS}"))
+        result = await session.execute(
+            select(Chunk.chunk_id, Chunk.document_id, Chunk.text)
+            .where(matches)
+            .order_by(Chunk.document_id, Chunk.char_start)
+            .limit(10)
         )
         rows = result.fetchall()
 
-    if not rows:
-        return f"No matches for pattern {pattern!r}."
+        if not rows:
+            return Command(update={
+                "messages": [ToolMessage(
+                    content=f"No matches for pattern {pattern!r}.",
+                    tool_call_id=tool_call_id,
+                )],
+            })
 
-    return json.dumps([
+        docs_matched = (await session.execute(
+            select(func.count(func.distinct(Chunk.document_id))).where(matches)
+        )).scalar_one()
+        total_docs = (await session.execute(
+            select(func.count(func.distinct(Chunk.document_id)))
+        )).scalar_one()
+
+    # A term matched in nearly every document is a weak signal; a rare, specific
+    # match is a strong one.
+    score = round(1 - (docs_matched / total_docs), 3) if total_docs else 0.0
+    keyword_matches = {row.document_id: score for row in rows}
+
+    model_view = [
         {
             "chunk_id": row.chunk_id,
             "document_id": row.document_id,
             "text": row.text,
         }
         for row in rows
-    ])
+    ]
+
+    return Command(update={
+        "keyword_matches": keyword_matches,
+        "messages": [ToolMessage(content=json.dumps(model_view), tool_call_id=tool_call_id)],
+    })
 
 
 @tool
@@ -141,17 +161,13 @@ async def list_documents(offset: int = 0, limit: int = 20) -> str:
         limit: Maximum number of documents to return (max 200).
     """
     capped_limit = min(limit, 200)
-    async with engine.connect() as conn:
-        result = await conn.execute(
-            text("""
-                SELECT document_id, COUNT(*) AS chunks
-                FROM chunk
-                GROUP BY document_id
-                ORDER BY document_id
-                OFFSET :offset
-                LIMIT :limit
-            """),
-            {"offset": max(offset, 0), "limit": capped_limit + 1},
+    async with db_session() as session:
+        result = await session.execute(
+            select(Chunk.document_id, func.count().label("chunks"))
+            .group_by(Chunk.document_id)
+            .order_by(Chunk.document_id)
+            .offset(max(offset, 0))
+            .limit(capped_limit + 1)
         )
         rows = result.fetchall()
 
@@ -179,21 +195,13 @@ async def read_document(document_id: str, start_chunk: int = 0, limit: int = 5) 
         start_chunk: Zero-based index of the first chunk to read.
         limit: How many chunks to return (max 10).
     """
-    async with engine.connect() as conn:
-        result = await conn.execute(
-            text("""
-                SELECT chunk_id, text
-                FROM chunk
-                WHERE document_id = :document_id
-                ORDER BY char_start
-                OFFSET :offset
-                LIMIT :limit
-            """),
-            {
-                "document_id": document_id,
-                "offset": max(start_chunk, 0),
-                "limit": min(limit, 10),
-            },
+    async with db_session() as session:
+        result = await session.execute(
+            select(Chunk.chunk_id, Chunk.text)
+            .where(Chunk.document_id == document_id)
+            .order_by(Chunk.char_start)
+            .offset(max(start_chunk, 0))
+            .limit(min(limit, 10))
         )
         rows = result.fetchall()
 
