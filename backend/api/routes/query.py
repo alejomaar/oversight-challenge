@@ -6,9 +6,11 @@ from fastapi import APIRouter
 import logging
 from datetime import datetime
 from langchain_core.messages import HumanMessage
+from sqlalchemy import text as sql_text
 
 from models.query import QueryRequest, QueryResponse
 from services.agent import agent
+from db.session import engine
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -45,5 +47,13 @@ async def query_knowledge_base(request: QueryRequest):
         timestamp=datetime.now(),
         explain_mode=request.explain_like_10
     )
+
+
+@router.get("/count")
+async def count_chunks():
+    """Count the number of chunks in the knowledge base."""
+    async with engine.connect() as conn:
+        result = await conn.execute(sql_text("SELECT COUNT(*) FROM chunk"))
+        return {"count": result.scalar_one()}
 
 

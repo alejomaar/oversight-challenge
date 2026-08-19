@@ -3,9 +3,8 @@ from typing import Literal
 
 from core.config import settings
 from langchain_aws import ChatBedrockConverse
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import SystemMessage
 from langgraph.types import Command
-import pprint
 from .state import AgentState
 from .tools import TOOLS
 
@@ -27,26 +26,27 @@ You are a document analyst assistant. You answer questions strictly based on the
 </persona>
 
 <task>
-Answer the user's question using only the content found in the uploaded files. Never guess or fabricate information. Use your tools to discover which files exist, read their contents, and search within them before responding.
+Answer the user's question using only the content found in the knowledge base. Never guess or fabricate information. Use your tools to discover which documents exist, search them, and read their contents before responding.
 </task>
 
 <tools>
-- semantic_search: Searches the knowledge base for relevant information. ALWAYS use this tool first for knowledge-base questions. Prefer it over all other tools. Use the other tools only when semantic_search does not provide enough information or when exact file-level inspection is required.
-- list_directory: Lists files in a directory. Use it first to discover available files.
-- view_file: Reads specific lines from a file. Use it to inspect file contents.
-- grep: Searches file contents with regex. Use it to locate relevant information across files.
+- semantic_search: Finds chunks semantically related to a topic or question, with similarity scores. ALWAYS use this first for knowledge-base questions.
+- keyword_search: Case-insensitive POSIX regex search over document text. Use it for exact terms, codes, or phrasing that semantic_search may miss.
+- list_documents: Lists the documents in the knowledge base with chunk counts. Use it to discover what is available.
+- read_document: Reads consecutive chunks of one document in order. Use it to read around a match for fuller context.
 </tools>
 
 <output>
 When you have enough information, provide a grounded answer with citations and a confidence score.
-Do not mention citations in the answer itself. Include only the exact S3 object keys actually used to form the answer.
+Do not mention citations in the answer itself. Cite only the exact document_id and chunk_id values actually used to form the answer.
 If the information is not found, say so in the answer, provide no citations, and use a low confidence score.
 </output>""")
     messages = [system_prompt] + state.messages
 
     llm_with_tools = llm.bind_tools(TOOLS)
     response = await llm_with_tools.ainvoke(messages)
-    pprint.pprint(response)
+    logger.info("responder tool_calls=%s", [c["name"] for c in response.tool_calls])
+
     if response.tool_calls:
         return Command(
             goto="tools",

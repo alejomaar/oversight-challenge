@@ -1,9 +1,12 @@
-import asyncio
-import functools
+"""
+Agent tools. Every tool reads the knowledge base out of Postgres.
+
+Document text and embeddings are persisted in the `chunk` table, so the tools
+need no filesystem and no shell. Original uploads stay in S3 for provenance.
+"""
+
 import json
 import logging
-import subprocess
-from pathlib import Path
 
 import boto3
 from core.config import settings
@@ -13,33 +16,10 @@ from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
-uploads_path = Path(settings.UPLOAD_DIR)
 bedrock = boto3.client("bedrock-runtime", region_name=settings.AWS_REGION)
 
-
-def log_errors(func):
-    """Log an exception raised by a tool before letting it propagate."""
-    if asyncio.iscoroutinefunction(func):
-
-        @functools.wraps(func)
-        async def async_wrapper(*args, **kwargs):
-            try:
-                return await func(*args, **kwargs)
-            except Exception:
-                logger.exception("Tool %s failed", func.__name__)
-                raise
-
-        return async_wrapper
-
-    @functools.wraps(func)
-    def sync_wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except Exception:
-            logger.exception("Tool %s failed", func.__name__)
-            raise
-
-    return sync_wrapper
+# Guards a pathological regex from holding a connection open.
+SEARCH_TIMEOUT_MS = 5000
 
 
 def _embed_query(query: str) -> list[float]:
@@ -54,95 +34,135 @@ def _embed_query(query: str) -> list[float]:
 
 
 @tool
-@log_errors
-def list_directory(path: str = "") -> str:
-    """List files in a directory. Defaults to the uploads directory."""
-    target = uploads_path / path if path else uploads_path
-    result = subprocess.run(["ls", str(target)], capture_output=True, text=True)
-    return result.stdout or result.stderr
-
-
-@tool
-@log_errors
-def view_file(path: str, start_line: int, end_line: int) -> str:
-    """View file contents within a line range (max 50 lines).
-
-    Args:
-        path: File path relative to uploads directory.
-        start_line: First line number to display.
-        end_line: Last line number to display.
-    """
-    if end_line - start_line > 50:
-        raise ValueError("Range exceeds 50 lines. Use a smaller range.")
-    file = uploads_path / path
-    result = subprocess.run(
-        ["sed", "-n", f"{start_line},{end_line}p", str(file)],
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout or result.stderr
-
-
-@tool
-@log_errors
-def keyword_search(pattern: str, path: str = "") -> str:
-    """Search documents for specific keywords using a grep-like regex query. Returns matching file paths and line numbers.
-
-    Args:
-        pattern: Grep-style regex pattern to search for (case-insensitive).
-        path: Directory to search in, relative to uploads. Defaults to uploads root.
-    """
-    target = uploads_path / path if path else uploads_path
-    result = subprocess.run(
-        f'grep -rin "{pattern}" "{target}" | cut -d: -f1,2',
-        shell=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout or result.stderr
-
-
-@tool
-@log_errors
-async def semantic_search(concept: str) -> str:
-    """Search the knowledge base for documents relevant to a high-level topic, concept, or question. Returns the most semantically similar document chunks.
+async def semantic_search(concept: str, top_k: int = 4) -> str:
+    """Search the knowledge base for chunks semantically related to a topic, concept, or question. Returns the most similar chunks with their similarity scores.
 
     Args:
         concept: The topic, concept, or question to search for.
+        top_k: How many chunks to return (max 20).
     """
     embedding = _embed_query(concept)
 
-    async with engine.begin() as conn:
+    async with engine.connect() as conn:
         result = await conn.execute(
             text("""
-                SELECT text, document_id, 1 - (embedding <=> cast(:embedding as vector)) AS similarity
+                SELECT chunk_id, document_id, text,
+                       1 - (embedding <=> cast(:embedding as vector)) AS similarity
                 FROM chunk
                 ORDER BY embedding <=> cast(:embedding as vector)
-                LIMIT 4
+                LIMIT :limit
             """),
-            {"embedding": str(embedding)},
+            {"embedding": str(embedding), "limit": min(top_k, 20)},
         )
         rows = result.fetchall()
 
     if not rows:
         return "No relevant chunks found in the knowledge base."
 
-    answer = json.dumps(
-        [
+    return json.dumps([
+        {
+            "chunk_id": row.chunk_id,
+            "document_id": row.document_id,
+            "similarity": round(row.similarity, 3),
+            "text": row.text,
+        }
+        for row in rows
+    ])
+
+
+@tool
+async def keyword_search(pattern: str, document_id: str = "") -> str:
+    """Search document text with a case-insensitive POSIX regular expression. Use it for exact terms, codes, or phrasing that semantic search may miss.
+
+    Args:
+        pattern: POSIX regex, for example "refund|reimburse" or "SLA of [0-9]+%".
+        document_id: Restrict the search to one document. Empty searches all documents.
+    """
+    async with engine.begin() as conn:
+        await conn.execute(text(f"SET LOCAL statement_timeout = {SEARCH_TIMEOUT_MS}"))
+        result = await conn.execute(
+            text("""
+                SELECT chunk_id, document_id, text
+                FROM chunk
+                WHERE text ~* :pattern
+                  AND (:document_id = '' OR document_id = :document_id)
+                ORDER BY document_id, char_start
+                LIMIT 10
+            """),
+            {"pattern": pattern, "document_id": document_id},
+        )
+        rows = result.fetchall()
+
+    if not rows:
+        return f"No matches for pattern {pattern!r}."
+
+    return json.dumps([
+        {
+            "chunk_id": row.chunk_id,
+            "document_id": row.document_id,
+            "text": row.text,
+        }
+        for row in rows
+    ])
+
+
+@tool
+async def list_documents() -> str:
+    """List every document in the knowledge base with its chunk count. Use it to discover what is available before searching."""
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            text("""
+                SELECT document_id, COUNT(*) AS chunks
+                FROM chunk
+                GROUP BY document_id
+                ORDER BY document_id
+            """)
+        )
+        rows = result.fetchall()
+
+    if not rows:
+        return "The knowledge base is empty."
+
+    return json.dumps([
+        {"document_id": row.document_id, "chunks": row.chunks}
+        for row in rows
+    ])
+
+
+@tool
+async def read_document(document_id: str, start_chunk: int = 0, limit: int = 5) -> str:
+    """Read consecutive chunks of one document in their original order. Use it to read around a match or to understand a document's structure.
+
+    Args:
+        document_id: Identifier returned by list_documents or a search tool.
+        start_chunk: Zero-based index of the first chunk to read.
+        limit: How many chunks to return (max 10).
+    """
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            text("""
+                SELECT chunk_id, text
+                FROM chunk
+                WHERE document_id = :document_id
+                ORDER BY char_start
+                OFFSET :offset
+                LIMIT :limit
+            """),
             {
-                "document_id": row.document_id,
-                "similarity": round(row.similarity * 100),
-                "text": row.text,
-            }
-            for row in rows
-        ]
-    )
-    print("== RAG Start==")
-    print(answer)
-    print("== RAG End==")
+                "document_id": document_id,
+                "offset": max(start_chunk, 0),
+                "limit": min(limit, 10),
+            },
+        )
+        rows = result.fetchall()
 
-    return answer
+    if not rows:
+        return f"No chunks found for document {document_id!r}."
+
+    return json.dumps([
+        {"chunk_id": row.chunk_id, "text": row.text}
+        for row in rows
+    ])
 
 
-TOOLS = [list_directory, view_file, keyword_search, semantic_search]
-# TOOLS = [ semantic_search]
+TOOLS = [semantic_search, keyword_search, list_documents, read_document]

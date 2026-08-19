@@ -5,8 +5,6 @@ Loads from environment variables with sensible defaults.
 
 from pydantic_settings import BaseSettings
 from typing import List
-from pathlib import Path
-import os
 
 
 class Settings(BaseSettings):
@@ -22,7 +20,10 @@ class Settings(BaseSettings):
 
     # AWS Configuration
     AWS_REGION: str = "us-east-1"
-    S3_BUCKET_NAME: str = ""
+
+    # Document storage - original files are kept in S3, extracted text in Postgres
+    S3_BUCKET_NAME: str 
+    RAW_PREFIX: str = "raw"
 
     # Bedrock Models
     BEDROCK_EMBEDDINGS_MODEL_ID: str = "amazon.titan-embed-text-v2:0"
@@ -34,32 +35,20 @@ class Settings(BaseSettings):
     TOP_K_CHUNKS: int = 5
     TEMPERATURE: float = 0.7
     MAX_TOKENS: int = 1000
-    RETRIEVER_EXPAND_K_MULTIPLIER: int = 3
-    RETRIEVER_MAX_K: int = 20
-    CONFIDENCE_SCORE_WEIGHTS: str = "0.5:0.3:0.1:0.1"
-    CONFIDENCE_SCORE_POWER: float = 0.9
 
-    # Database
-    DATABASE_URL: str
+    # Database - local dev sets DATABASE_URL directly; in AWS the password is
+    # read at cold start from the Secrets Manager secret named by DB_SECRET_ARN.
+    DATABASE_URL: str 
+
 
     # File Upload Configuration
     MAX_FILE_SIZE: int = 50 * 1024 * 1024
-    UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "./mnt")
-    RAW_DIR: str = "raw"
-    PROCESSED_DIR: str = "processed"
     ALLOWED_EXTENSIONS: str = ".pdf,.docx,.doc,.txt"
-    SUPPORTED_FILE_EXTENSIONS: str = ".pdf,.docx,.doc,.txt"
-    
+
     class Config:
         env_file = ".env"
         case_sensitive = False
         extra = "ignore"
 
 
-# Create settings instance
 settings = Settings()
-
-# Create necessary directories
-Path(settings.UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
-(Path(settings.UPLOAD_DIR) / settings.RAW_DIR).mkdir(parents=True, exist_ok=True)
-(Path(settings.UPLOAD_DIR) / settings.PROCESSED_DIR).mkdir(parents=True, exist_ok=True)

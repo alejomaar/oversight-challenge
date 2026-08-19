@@ -1,6 +1,22 @@
 version: '3.8'
 
 services:
+  pgvector:
+    image: pgvector/pgvector:0.8.6-pg18-trixie
+    container_name: kb_rag_pgvector
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: rag_user
+      POSTGRES_PASSWORD: rag_password
+      POSTGRES_DB: rag_db
+    volumes:
+      - pgvector_data:/var/lib/postgresql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+    networks:
+      - kb_rag_network
+
   backend:
     build:
       context: ./backend
@@ -12,9 +28,9 @@ services:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
-    volumes:
-      - ./backend/vectorstore:/app/vectorstore
-      - ./backend/uploads:/app/uploads
+      - DATABASE_URL=postgresql+asyncpg://rag_user:rag_password@pgvector:5432/rag_db
+    depends_on:
+      - pgvector
     restart: unless-stopped
     networks:
       - kb_rag_network
@@ -33,6 +49,9 @@ services:
     restart: unless-stopped
     networks:
       - kb_rag_network
+
+volumes:
+  pgvector_data:
 
 networks:
   kb_rag_network:

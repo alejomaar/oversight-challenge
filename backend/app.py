@@ -9,6 +9,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from core.config import settings
+from db.bootstrap import ensure_schema
 from api.routes import upload, query, files, health
 
 # Setup logging
@@ -25,6 +26,7 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Knowledge Base RAG API...")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
+    await ensure_schema()
     yield
     # Shutdown
     logger.info("Shutting down Knowledge Base RAG API...")
