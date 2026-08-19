@@ -12,6 +12,8 @@ def add_api(stack: Stack, handler: lambda_.IFunction) -> apigw.RestApi:
 
         rest_api_name="rag-chat-api",
 
+        binary_media_types=["multipart/form-data"],
+
         default_cors_preflight_options=apigw.CorsOptions(
             allow_origins=apigw.Cors.ALL_ORIGINS,
             allow_methods=apigw.Cors.ALL_METHODS,

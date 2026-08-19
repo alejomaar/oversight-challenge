@@ -99,12 +99,11 @@ async def semantic_search(
 
 
 @tool
-async def keyword_search(pattern: str, document_id: str = "") -> str:
-    """Search document text with a case-insensitive POSIX regular expression. Use it for exact terms, codes, or phrasing that semantic search may miss.
+async def keyword_search(pattern: str) -> str:
+    """Search document text with a case-insensitive POSIX regular expression, across every document in the knowledge base. Use it for exact terms, codes, or phrasing that semantic search may miss.
 
     Args:
         pattern: POSIX regex, for example "refund|reimburse" or "SLA of [0-9]+%".
-        document_id: Restrict the search to one document. Empty searches all documents.
     """
     async with engine.begin() as conn:
         await conn.execute(text(f"SET LOCAL statement_timeout = {SEARCH_TIMEOUT_MS}"))
@@ -113,11 +112,10 @@ async def keyword_search(pattern: str, document_id: str = "") -> str:
                 SELECT chunk_id, document_id, text
                 FROM chunk
                 WHERE text ~* :pattern
-                  AND (:document_id = '' OR document_id = :document_id)
                 ORDER BY document_id, char_start
                 LIMIT 10
             """),
-            {"pattern": pattern, "document_id": document_id},
+            {"pattern": pattern},
         )
         rows = result.fetchall()
 
@@ -135,8 +133,14 @@ async def keyword_search(pattern: str, document_id: str = "") -> str:
 
 
 @tool
-async def list_documents() -> str:
-    """List every document in the knowledge base with its chunk count. Use it to discover what is available before searching."""
+async def list_documents(offset: int = 0, limit: int = 20) -> str:
+    """List documents in the knowledge base with their chunk counts, ordered by document_id. Use it to discover what is available before searching. If the result says more documents follow, call again with a higher offset to page through them.
+
+    Args:
+        offset: Zero-based index of the first document to return.
+        limit: Maximum number of documents to return (max 200).
+    """
+    capped_limit = min(limit, 200)
     async with engine.connect() as conn:
         result = await conn.execute(
             text("""
@@ -144,17 +148,26 @@ async def list_documents() -> str:
                 FROM chunk
                 GROUP BY document_id
                 ORDER BY document_id
-            """)
+                OFFSET :offset
+                LIMIT :limit
+            """),
+            {"offset": max(offset, 0), "limit": capped_limit + 1},
         )
         rows = result.fetchall()
 
     if not rows:
-        return "The knowledge base is empty."
+        return "No documents found." if offset else "The knowledge base is empty."
 
-    return json.dumps([
-        {"document_id": row.document_id, "chunks": row.chunks}
-        for row in rows
-    ])
+    has_more = len(rows) > capped_limit
+    rows = rows[:capped_limit]
+
+    return json.dumps({
+        "documents": [
+            {"document_id": row.document_id, "chunks": row.chunks}
+            for row in rows
+        ],
+        "has_more": has_more,
+    })
 
 
 @tool

@@ -6,7 +6,7 @@ itself, only presentation and the session-state plumbing Streamlit needs.
 
 import streamlit as st
 
-from api_client import API_BASE_URL, API_TOKEN, api_get, api_post, api_delete
+from api_client import API_BASE_URL, API_TOKEN, api_get, api_post, api_delete, api_upload_file
 
 
 def format_file_size(size_bytes: int) -> str:
@@ -21,8 +21,6 @@ def format_file_size(size_bytes: int) -> str:
 def initialize_session_state():
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
-    if 'explain_like_10' not in st.session_state:
-        st.session_state.explain_like_10 = False
     if 'top_k' not in st.session_state:
         st.session_state.top_k = 5
     if 'selected_doc' not in st.session_state:
@@ -46,8 +44,9 @@ def render_connection_section():
     else:
         st.caption("Token: not set")
     st.caption(
-        "The API does not validate tokens yet — Authorization is sent, "
-        "but requests succeed either way until backend auth ships."
+        "Token auth is enforced at API Gateway (API key + usage plan) in AWS. "
+        "Running against a local `uvicorn` backend bypasses it entirely — "
+        "there is no gateway in front to check the key."
     )
 
     if st.button("Check connection", use_container_width=True):
@@ -64,14 +63,23 @@ def render_upload_widget():
         "Upload Documents",
         type=['pdf', 'docx', 'doc', 'txt'],
         accept_multiple_files=True,
-        help="Ingestion is out of scope for this client — the knowledge base is pre-seeded.",
         label_visibility="visible",
     )
-    if uploaded_files:
-        st.info(
-            "Ingestion isn't wired to this client — the knowledge base is pre-seeded "
-            "server-side. See the seeding step in the README."
-        )
+    if uploaded_files and st.button("Ingest", use_container_width=True):
+        any_ok = False
+        for f in uploaded_files:
+            with st.spinner(f"Ingesting {f.name}..."):
+                ok, status, data = api_upload_file(
+                    "/api/upload/", f.name, f.getvalue(), f.type or "application/octet-stream"
+                )
+            if ok:
+                any_ok = True
+                st.success(f"✅ {f.name}: {data.get('message', 'indexed')}")
+            else:
+                detail = data.get("detail", data) if isinstance(data, dict) else data
+                st.error(f"⚠️ {f.name} (status {status}): {detail}")
+        if any_ok:
+            st.rerun()
 
 
 def render_kb_file_list():
@@ -140,11 +148,6 @@ def render_sidebar():
         st.markdown("---")
 
         st.markdown("### ⚙️ Settings")
-        st.session_state.explain_like_10 = st.toggle(
-            "🧒 Explain Like I'm 10",
-            value=st.session_state.explain_like_10,
-            help="Simplify answers for easier understanding",
-        )
         st.session_state.top_k = st.slider(
             "Chunks to retrieve (top_k)",
             min_value=1, max_value=20, value=st.session_state.top_k,
@@ -184,7 +187,19 @@ def render_sources(sources: list):
         st.info("No sources returned by the API for this answer.")
         return
     for source in sources:
-        st.markdown(f"- {source}")
+        st.markdown(f"**{source['document_id']}** · `{source['chunk_id']}` · score {source['score']:.2f}")
+        st.caption(source["excerpt"])
+
+
+def render_metadata(metadata: dict):
+    if not metadata:
+        return
+    st.caption(
+        f"model: `{metadata.get('model', '—')}` · "
+        f"retrieval: `{metadata.get('retrieval_strategy', '—')}` · "
+        f"latency: {metadata.get('latency_ms', '—')} ms · "
+        f"request_id: `{metadata.get('request_id', '—')}`"
+    )
 
 
 def ask_and_render(question: str):
@@ -194,7 +209,6 @@ def ask_and_render(question: str):
     with st.spinner("🤔 Asking the knowledge base agent..."):
         ok, status, data = api_post("/api/query/", {
             "question": question,
-            "explain_like_10": st.session_state.explain_like_10,
             "top_k": st.session_state.top_k,
         })
 
@@ -207,6 +221,7 @@ def ask_and_render(question: str):
             st.markdown(f'<div class="smooth-fade">{answer_text}</div>', unsafe_allow_html=True)
             render_confidence(data.get("confidence_score", 0.0))
             render_sources(data.get("sources", []))
+            render_metadata(data.get("metadata", {}))
             with st.expander("Raw response JSON", expanded=False):
                 st.json(data)
 

@@ -8,29 +8,35 @@ all RAG behavior.
 import os
 
 import httpx
-import streamlit as st
 
 from constants import DEFAULT_API_BASE_URL
 
-
-def _config(key: str, default: str = "") -> str:
-    if key in os.environ:
-        return os.environ[key]
-    try:
-        return st.secrets[key]
-    except Exception:
-        return default
+API_BASE_URL = os.environ.get("API_BASE_URL", DEFAULT_API_BASE_URL).rstrip("/")
+API_TOKEN = os.environ.get("API_TOKEN", "")
 
 
-API_BASE_URL = _config("API_BASE_URL", DEFAULT_API_BASE_URL).rstrip("/")
-API_TOKEN = _config("API_TOKEN", "")
+def _auth_headers() -> dict:
+    headers = {}
+    if API_TOKEN:
+        headers["x-api-key"] = API_TOKEN
+    return headers
 
 
 def _headers() -> dict:
-    headers = {"Content-Type": "application/json"}
-    if API_TOKEN:
-        headers["Authorization"] = f"Bearer {API_TOKEN}"
-    return headers
+    return {"Content-Type": "application/json", **_auth_headers()}
+
+
+def _parse_response(response: httpx.Response):
+    """Returns (ok, status_code, data_or_error_message)."""
+    if response.status_code in (401, 403):
+        return False, response.status_code, "Unauthorized — check API_TOKEN."
+
+    try:
+        data = response.json()
+    except ValueError:
+        return False, response.status_code, response.text or f"API returned a non-JSON response (status {response.status_code})."
+
+    return response.is_success, response.status_code, data
 
 
 def api_request(method: str, path: str, **kwargs):
@@ -45,20 +51,7 @@ def api_request(method: str, path: str, **kwargs):
     except httpx.RequestError as e:
         return False, None, str(e)
 
-    if response.status_code in (401, 403):
-        return False, response.status_code, "Unauthorized — check API_TOKEN."
-
-    if not response.is_success:
-        try:
-            detail = response.json()
-        except ValueError:
-            detail = response.text
-        return False, response.status_code, detail
-
-    try:
-        return True, response.status_code, response.json()
-    except ValueError:
-        return True, response.status_code, {}
+    return _parse_response(response)
 
 
 def api_get(path: str):
@@ -71,3 +64,23 @@ def api_post(path: str, json: dict):
 
 def api_delete(path: str):
     return api_request("DELETE", path)
+
+
+def api_upload_file(path: str, filename: str, content: bytes, content_type: str):
+    """Multipart file upload. Returns (ok, status_code, data_or_error_message)."""
+    url = f"{API_BASE_URL}{path}"
+    try:
+        response = httpx.post(
+            url,
+            headers=_auth_headers(),
+            files={"file": (filename, content, content_type)},
+            timeout=65,
+        )
+    except httpx.ConnectError:
+        return False, None, f"Could not connect to {API_BASE_URL}. Is the API running and reachable?"
+    except httpx.TimeoutException:
+        return False, None, "Request timed out waiting for the API."
+    except httpx.RequestError as e:
+        return False, None, str(e)
+
+    return _parse_response(response)
