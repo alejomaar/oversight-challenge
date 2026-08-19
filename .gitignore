@@ -11,11 +11,13 @@ ENV/
 *.egg-info/
 dist/
 build/
-
+mnt/
 # Environment
 .env
+.env.prod
 .env.local
 .env.*.local
+.streamlit/secrets.toml
 
 # IDE
 .vscode/
@@ -26,8 +28,6 @@ build/
 
 # Data
 data/
-vectorstore/
-uploads/
 *.faiss
 *.pkl
 

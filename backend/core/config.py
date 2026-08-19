@@ -36,9 +36,14 @@ class Settings(BaseSettings):
     TEMPERATURE: float = 0.7
     MAX_TOKENS: int = 1000
 
-    # Database - local dev sets DATABASE_URL directly; in AWS the password is
-    # read at cold start from the Secrets Manager secret named by DB_SECRET_ARN.
-    DATABASE_URL: str 
+    # Database - local dev sets DATABASE_URL directly; in AWS it's left blank
+    # and built at cold start from DB_HOST/DB_PORT/DB_NAME plus the password
+    # read from the Secrets Manager secret named by DB_SECRET_ARN.
+    DATABASE_URL: str = ""
+    DB_SECRET_ARN: str = ""
+    DB_HOST: str = ""
+    DB_PORT: str = "5432"
+    DB_NAME: str = "rag_db"
 
 
     # File Upload Configuration

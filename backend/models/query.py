@@ -3,7 +3,7 @@ Pydantic models for query operations.
 """
 
 from pydantic import BaseModel, Field
-from typing import Any, List, Optional
+from typing import List, Optional
 from datetime import datetime
 
 
@@ -23,13 +23,30 @@ class ConfidenceBreakdown(BaseModel):
     final_score: float
 
 
+class SourceHit(BaseModel):
+    """A retrieved chunk cited as a source for the answer."""
+    document_id: str
+    chunk_id: str
+    score: float
+    excerpt: str
+
+
+class QueryMetadata(BaseModel):
+    """Request-level metadata for observability and debugging."""
+    model: str
+    retrieval_strategy: str
+    request_id: str
+    latency_ms: int
+
+
 class QueryResponse(BaseModel):
     """Response model for query."""
-    answer: Any
-    sources: List[str]
+    answer: str
+    sources: List[SourceHit]
     confidence_score: float
     confidence_breakdown: Optional[ConfidenceBreakdown] = None
     similarity_scores: List[float]
     query: str
     timestamp: datetime
     explain_mode: bool
+    metadata: QueryMetadata

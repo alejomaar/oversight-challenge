@@ -7,11 +7,14 @@ need no filesystem and no shell. Original uploads stay in S3 for provenance.
 
 import json
 import logging
+from typing import Annotated
 
 import boto3
 from core.config import settings
 from db.session import engine
-from langchain_core.tools import tool
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import InjectedToolCallId, tool
+from langgraph.types import Command
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
@@ -34,7 +37,11 @@ def _embed_query(query: str) -> list[float]:
 
 
 @tool
-async def semantic_search(concept: str, top_k: int = 4) -> str:
+async def semantic_search(
+    concept: str,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    top_k: int = 4,
+) -> Command:
     """Search the knowledge base for chunks semantically related to a topic, concept, or question. Returns the most similar chunks with their similarity scores.
 
     Args:
@@ -57,9 +64,25 @@ async def semantic_search(concept: str, top_k: int = 4) -> str:
         rows = result.fetchall()
 
     if not rows:
-        return "No relevant chunks found in the knowledge base."
+        return Command(update={
+            "messages": [ToolMessage(
+                content="No relevant chunks found in the knowledge base.",
+                tool_call_id=tool_call_id,
+            )],
+        })
 
-    return json.dumps([
+    # State keeps only an excerpt per chunk (for the response's sources list);
+    # the model gets the full text so it can actually answer from it.
+    hits = {
+        row.chunk_id: {
+            "chunk_id": row.chunk_id,
+            "document_id": row.document_id,
+            "similarity": round(row.similarity, 3),
+            "excerpt": row.text[:280],
+        }
+        for row in rows
+    }
+    model_view = [
         {
             "chunk_id": row.chunk_id,
             "document_id": row.document_id,
@@ -67,7 +90,12 @@ async def semantic_search(concept: str, top_k: int = 4) -> str:
             "text": row.text,
         }
         for row in rows
-    ])
+    ]
+
+    return Command(update={
+        "hits": hits,
+        "messages": [ToolMessage(content=json.dumps(model_view), tool_call_id=tool_call_id)],
+    })
 
 
 @tool
