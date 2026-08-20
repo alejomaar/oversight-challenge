@@ -3,17 +3,14 @@ Answering questions over the knowledge base via the ReAct agent, and
 knowledge-base-wide chunk counting.
 """
 
-import time
-import uuid
 from datetime import datetime
 
 from langchain_core.messages import HumanMessage
 from sqlalchemy import func, select
 
-from config.settings import settings
 from models import Chunk
 from infrastructure.db import db_session
-from schemas.api.query import ConfidenceBreakdown, QueryMetadata, QueryResponse, SourceHit
+from schemas.api.query import ConfidenceBreakdown, QueryResponse, SourceInfo
 from services.agent import agent
 
 
@@ -45,9 +42,6 @@ async def answer_question(question: str, top_k: int, explain_like_10: bool) -> Q
     The agent can use semantic_search, keyword_search, list_documents, and
     read_document to answer questions about the knowledge base.
     """
-    request_id = str(uuid.uuid4())
-    started = time.perf_counter()
-
     result = await agent.ainvoke({"messages": [HumanMessage(content=question)]})
     content = result["messages"][-1].content
 
@@ -72,11 +66,12 @@ async def answer_question(question: str, top_k: int, explain_like_10: bool) -> Q
     return QueryResponse(
         answer=final_message,
         sources=[
-            SourceHit(
-                document_id=hit["document_id"],
-                chunk_id=hit["chunk_id"],
-                score=hit["similarity"],
-                excerpt=hit["excerpt"],
+            SourceInfo(
+                source=hit["source"],
+                chunk_index=hit["chunk_index"],
+                file_path=hit["file_path"],
+                content_preview=hit["content_preview"],
+                similarity_score=hit["similarity"],
             )
             for hit in top_hits
         ],
@@ -86,12 +81,6 @@ async def answer_question(question: str, top_k: int, explain_like_10: bool) -> Q
         query=question,
         timestamp=datetime.now(),
         explain_mode=explain_like_10,
-        metadata=QueryMetadata(
-            model=settings.BEDROCK_LLM_MODEL_ID,
-            retrieval_strategy="semantic_search+keyword_search" if keyword_matches else "semantic_search",
-            request_id=request_id,
-            latency_ms=int((time.perf_counter() - started) * 1000),
-        ),
     )
 
 

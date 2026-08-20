@@ -6,8 +6,8 @@ import uuid
 
 from fastapi import APIRouter
 
-from domain.document import delete_document, get_document, list_documents
-from schemas.api.files import FileDeleteResponse, FileInfo, FileListResponse
+from domain.document import delete_document, download_document, get_document, list_documents
+from schemas.api.files import FileDeleteResponse, FileDownloadResponse, FileInfo, FileListResponse
 
 router = APIRouter()
 
@@ -26,6 +26,14 @@ async def get_file(file_id: uuid.UUID):
     Get file information by document id.
     """
     return await get_document(file_id)
+
+
+@router.get("/{file_id}/download", response_model=FileDownloadResponse)
+async def download_file(file_id: uuid.UUID):
+    """
+    Get a short-lived presigned URL for the document's original file.
+    """
+    return await download_document(file_id)
 
 
 @router.delete("/{file_id}", response_model=FileDeleteResponse)

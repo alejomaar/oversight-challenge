@@ -28,6 +28,12 @@ class FileInfo(BaseModel):
     uploaded_at: datetime
 
 
+class FileDownloadResponse(FileInfo):
+    """File information plus a short-lived presigned GET URL for the original upload."""
+    download_url: str
+    expires_in: int
+
+
 class FileListResponse(BaseModel):
     """Response model for file list."""
     files: list[FileInfo]

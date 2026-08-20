@@ -186,6 +186,16 @@ CSS_STYLE = """
         color: #ffffff !important;
     }
 
+    /* Declared after the blanket white rule so download links stay visible. */
+    a, a:visited {
+        color: #667eea !important;
+        text-decoration: none;
+    }
+
+    a:hover {
+        text-decoration: underline;
+    }
+
     [data-testid="stChatMessage"] {
         background: rgba(255, 255, 255, 0.05) !important;
     }

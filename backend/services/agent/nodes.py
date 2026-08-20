@@ -46,7 +46,6 @@ If the information is not found, say so in the answer, provide no citations, and
     llm_with_tools = llm.bind_tools(TOOLS)
     response = await llm_with_tools.ainvoke(messages)
     logger.info("responder tool_calls=%s", [c["name"] for c in response.tool_calls])
-    print(response.pretty_print())
     if response.tool_calls:
         return Command(
             goto="tools",

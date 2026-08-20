@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 import boto3
+from botocore.config import Config
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from pypdf import PdfReader
@@ -24,7 +25,13 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from config.settings import settings
 from models import Chunk, Document
 from infrastructure.db import db_session
-from schemas.api.files import FileDeleteResponse, FileInfo, FileListResponse, FileUploadResponse
+from schemas.api.files import (
+    FileDeleteResponse,
+    FileDownloadResponse,
+    FileInfo,
+    FileListResponse,
+    FileUploadResponse,
+)
 
 text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=settings.CHUNK_SIZE,
@@ -32,7 +39,16 @@ text_splitter = RecursiveCharacterTextSplitter(
 )
 
 bedrock = boto3.client("bedrock-runtime", region_name=settings.AWS_REGION)
-s3 = boto3.client("s3", region_name=settings.AWS_REGION)
+# SigV4 explicitly: presigned URLs signed with SigV2 carry no session token, so
+# they are rejected when signed with the Lambda role's temporary credentials.
+s3 = boto3.client(
+    "s3",
+    region_name=settings.AWS_REGION,
+    config=Config(signature_version="s3v4"),
+)
+
+# Short enough to stay well inside the Lambda role's credential session.
+DOWNLOAD_URL_TTL = 300
 
 
 def _embed(text_input: str) -> list[float]:
@@ -177,6 +193,28 @@ async def get_document(document_id: uuid.UUID) -> FileInfo:
         raise HTTPException(status_code=404, detail="File not found")
 
     return _to_file_info(document)
+
+
+async def download_document(document_id: uuid.UUID) -> FileDownloadResponse:
+    """Presigned GET URL for a document's original file in S3."""
+    info = await get_document(document_id)
+
+    url = s3.generate_presigned_url(
+        "get_object",
+        Params={
+            "Bucket": settings.S3_BUCKET_NAME,
+            "Key": info.s3_key,
+            # Save under the original name rather than the UUID path.
+            "ResponseContentDisposition": f'attachment; filename="{info.filename}"',
+        },
+        ExpiresIn=DOWNLOAD_URL_TTL,
+    )
+
+    return FileDownloadResponse(
+        **info.model_dump(),
+        download_url=url,
+        expires_in=DOWNLOAD_URL_TTL,
+    )
 
 
 async def delete_document(document_id: uuid.UUID) -> FileDeleteResponse:

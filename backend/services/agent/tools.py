@@ -55,7 +55,16 @@ async def semantic_search(
 
     async with db_session() as session:
         result = await session.execute(
-            select(Chunk.id, Chunk.document_id, Chunk.content, (1 - distance).label("similarity"))
+            select(
+                Chunk.id,
+                Chunk.document_id,
+                Chunk.chunk_index,
+                Chunk.content,
+                Document.file_name,
+                Document.s3_key,
+                (1 - distance).label("similarity"),
+            )
+            .join(Document, Document.id == Chunk.document_id)
             .order_by(distance)
             .limit(min(top_k, 20))
         )
@@ -73,10 +82,11 @@ async def semantic_search(
     # the model gets the full text so it can actually answer from it.
     hits = {
         str(row.id): {
-            "chunk_id": str(row.id),
-            "document_id": str(row.document_id),
+            "source": row.file_name,
+            "chunk_index": row.chunk_index,
+            "file_path": row.s3_key,
             "similarity": round(row.similarity, 3),
-            "excerpt": row.content[:280],
+            "content_preview": row.content[:280],
         }
         for row in rows
     }

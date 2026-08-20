@@ -18,6 +18,16 @@ def format_file_size(size_bytes: int) -> str:
     return f"{size:.1f} TB"
 
 
+def get_doc_download(file_id: str) -> dict | None:
+    """Name, details, and a fresh presigned URL for one document.
+
+    Resolved on every render rather than cached — the URL is short-lived, and a
+    freshly minted one can never be stale.
+    """
+    ok, _, data = api_get(f"/api/files/{file_id}/download")
+    return data if ok else None
+
+
 def initialize_session_state():
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
@@ -95,15 +105,22 @@ def render_kb_file_list():
         st.info("No files in the knowledge base yet.")
         return []
 
-    for idx, f in enumerate(files):
-        col1, col2 = st.columns([3, 1])
+    for f in files:
+        col1, col2, col3 = st.columns([3, 0.5, 0.5])
         with col1:
-            if st.button(f"📄 {f['filename']}", key=f"doc_{f['file_id']}", use_container_width=True):
-                st.session_state.selected_doc = f
-                st.rerun()
+            download = get_doc_download(f["file_id"])
+            if download:
+                st.markdown(f"[📄 {f['filename']}]({download['download_url']})")
+            else:
+                st.markdown(f"📄 {f['filename']}")
+                st.caption("Original file unavailable for download.")
             st.caption(format_file_size(f.get("file_size", 0)))
         with col2:
-            if st.button("🗑️", key=f"delete_{idx}", help=f"Delete {f['filename']}"):
+            if st.button("ℹ️", key=f"info_{f['file_id']}", help=f"Details for {f['filename']}"):
+                st.session_state.selected_doc = f
+                st.rerun()
+        with col3:
+            if st.button("🗑️", key=f"delete_{f['file_id']}", help=f"Delete {f['filename']}"):
                 ok, status, result = api_delete(f"/api/files/{f['file_id']}")
                 if ok:
                     st.success(f"Deleted {f['filename']}")
@@ -134,6 +151,10 @@ def render_doc_preview():
     st.markdown(f"- **Processed:** {'Yes' if doc.get('processed') else 'No'}")
     if doc.get("chunk_count") is not None:
         st.markdown(f"- **Chunks:** {doc['chunk_count']}")
+
+    download = get_doc_download(doc["file_id"])
+    if download:
+        st.markdown(f"[⬇️ Download original]({download['download_url']})")
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -175,31 +196,46 @@ def render_confidence(confidence_score: float):
     st.markdown(
         f'<div class="confidence-score" style="border-left-color: {color};">'
         f'<strong>Confidence Score:</strong> <span style="color: {color};">{confidence_percent}%</span> '
-        f'(from the API response)</div>',
+        f'(Based on retrieval similarity from uploaded documents)</div>',
         unsafe_allow_html=True,
     )
 
 
 def render_sources(sources: list):
     st.markdown("---")
-    st.markdown("### 📚 Sources")
+    st.markdown("### 📚 Source Information")
     if not sources:
         st.info("No sources returned by the API for this answer.")
         return
-    for source in sources:
-        st.markdown(f"**{source['document_id']}** · `{source['chunk_id']}` · score {source['score']:.2f}")
-        st.caption(source["excerpt"])
+
+    # Each source is one chunk; the expander header names the files they came from.
+    file_names = dict.fromkeys(source["source"] for source in sources)
+
+    with st.expander(f"📄 Sources: {', '.join(file_names)}", expanded=False):
+        for source in sources:
+            st.markdown(f"**From {source['source']}:** {source['content_preview']}")
+            st.caption(f"chunk {source['chunk_index']} · similarity {source['similarity_score']:.2f}")
+            st.markdown("---")
+        st.markdown(f"**Total Sources Used:** {len(sources)}")
 
 
-def render_metadata(metadata: dict):
-    if not metadata:
-        return
-    st.caption(
-        f"model: `{metadata.get('model', '—')}` · "
-        f"retrieval: `{metadata.get('retrieval_strategy', '—')}` · "
-        f"latency: {metadata.get('latency_ms', '—')} ms · "
-        f"request_id: `{metadata.get('request_id', '—')}`"
-    )
+def render_assistant_turn(message: dict):
+    """Render one assistant turn in full — answer, confidence, and sources.
+
+    Used both for a fresh response and when replaying history, so a turn looks
+    the same after a rerun as it did when it arrived.
+    """
+    with st.chat_message("assistant"):
+        response = message.get("response")
+        if response is None:
+            st.markdown(message["content"])
+            return
+
+        st.markdown(f'<div class="smooth-fade">{message["content"]}</div>', unsafe_allow_html=True)
+        render_confidence(response.get("confidence_score", 0.0))
+        render_sources(response.get("sources", []))
+        with st.expander("Raw response JSON", expanded=False):
+            st.json(response)
 
 
 def ask_and_render(question: str):
@@ -212,25 +248,21 @@ def ask_and_render(question: str):
             "top_k": st.session_state.top_k,
         })
 
-    with st.chat_message("assistant"):
-        if not ok:
-            st.error(f"Request failed (status: {status}): {data}")
-            answer_text = f"⚠️ Request failed: {data}"
-        else:
-            answer_text = data.get("answer", "")
-            st.markdown(f'<div class="smooth-fade">{answer_text}</div>', unsafe_allow_html=True)
-            render_confidence(data.get("confidence_score", 0.0))
-            render_sources(data.get("sources", []))
-            render_metadata(data.get("metadata", {}))
-            with st.expander("Raw response JSON", expanded=False):
-                st.json(data)
+    if ok:
+        message = {"role": "assistant", "content": data.get("answer", ""), "response": data}
+    else:
+        message = {"role": "assistant", "content": f"⚠️ Request failed (status: {status}): {data}"}
 
-    st.session_state.chat_history.append({"role": "assistant", "content": answer_text})
+    st.session_state.chat_history.append(message)
+    render_assistant_turn(message)
 
 
 def render_chat_interface():
     for message in st.session_state.chat_history:
-        display_chat_message(message["role"], message["content"])
+        if message["role"] == "assistant":
+            render_assistant_turn(message)
+        else:
+            display_chat_message(message["role"], message["content"])
 
     user_question = st.chat_input("Ask a question about the knowledge base...")
     if user_question:
