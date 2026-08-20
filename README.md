@@ -204,10 +204,7 @@ confidence up:
 
 **🎥 Walkthrough** — [watch the run on Google Drive](https://drive.google.com/file/d/1FrFbKnnKo2ikUdc9m6KNV4tDMdiqjEOS/view?usp=sharing)
 
-**🖥️ Streamlit client** — a question answered against the uploaded corpus, with the confidence
-score and the sources the answer was built from:
-
-![Streamlit client answering "Which papers talk about medicine" with a 76% confidence score and its source documents](sample_docs/image.png)
+![Streamlit client answering a question with a confidence score and its source documents](sample_docs/image.png)
 
 ---
 
