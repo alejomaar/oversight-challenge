@@ -7,8 +7,8 @@ entirely on AWS, and a small local Streamlit app is the chat window you talk to 
 
 ## ✨ Key Features
 
-- 📄 **Upload almost anything** — PDF, Word, or plain text, with duplicate uploads rejected automatically.
-- 🔍 **Finds the right passage two ways at once** — by meaning, so paraphrased questions work, and by exact wording, so names and codes aren't missed.
+- 📄 **Upload PDF, Word, or plain text** — duplicate uploads rejected automatically.
+- 🔍 **Search by meaning and keywords** — semantic search for paraphrased questions, keyword search for exact names and codes.
 - 🤖 **Searches like a person would** — it decides how much digging a question needs and reads the full passage around anything it finds.
 - 📊 **Shows its work** — every answer carries the passages it was built from and a confidence score with its breakdown.
 - 🔐 **Locked behind an access token**, deployed and torn down with one command, and costing nothing while idle.
@@ -17,22 +17,12 @@ entirely on AWS, and a small local Streamlit app is the chat window you talk to 
 
 ## 🧭 How It Works
 
-**Ingestion.** The original file goes to S3 untouched, its text is extracted, and that text is split
-into ~1000-character chunks with 200 characters of overlap. Each chunk records its offset in the
-source text — which is what later lets a search hit be expanded back into its surrounding context —
-and is embedded by Bedrock's Titan model into a 1024-dimension vector. Chunk text, offsets, and
-embeddings land in Postgres in one transaction. Files are hashed with SHA-256 first, so an
-identical re-upload is rejected rather than duplicated.
+**Ingestion.** A file is uploaded to the API, split into chunks, and stored in Postgres. The
+original goes to S3 untouched. Each file is hashed by content, so an identical re-upload is
+rejected as a duplicate.
 
-**Query.** A conventional RAG implementation embeds the question, retrieves a fixed number of
-nearest chunks, and passes them to the model in one prompt. This project instead exposes retrieval
-as tools — semantic search, keyword search, list documents, read document — and lets the model
-choose: it calls what it needs, reads the results, and either calls again or answers. That matters
-because a fixed pipeline applies identical effort to every question: a narrow factual question
-needs one search and one expanded read, a comparative question needs several across documents, and
-a question about the corpus itself needs none. `read_document` is what most affects answer quality
-— a search hit is a chunk cut at an arbitrary boundary, so the prompt requires the agent to expand
-each hit to its complete paragraph or section before answering.
+**Query.** Agentic RAG. The agent has four tools — semantic search, keyword search, list documents,
+and read document — and can reason across several rounds of them before answering.
 
 ---
 
@@ -69,47 +59,67 @@ per-hour egress infrastructure. The database is the deliberate exception: it sit
 subnet so migrations can run from a developer machine, with its security group restricted to the
 single address in `DEV_ACCESS_IP`.
 
----
 
-## 🛠️ Tech Stack
 
-| Layer | Choice | Why |
-|---|---|---|
-| API compute | AWS Lambda (Docker image via Mangum) | Pay-per-invocation, zero idle cost, fits FastAPI unchanged |
-| API entry point | Amazon API Gateway (REST) | Managed auth (API key + usage plan) without writing an authorizer |
-| Vector store | RDS Postgres + pgvector (HNSW index) | One database holds metadata, text, and embeddings — nothing to keep in sync |
-| Keyword search | Postgres `pg_trgm` / `~*` regex | No separate search engine for a small corpus |
-| Embeddings | Bedrock Titan `amazon.titan-embed-text-v2:0` | AWS-native, cheap, no data leaves AWS |
-| LLM | Bedrock `openai.gpt-oss-20b-1:0` | AWS-hosted, pay-per-token, no data leaves AWS |
-| Orchestration | LangGraph (ReAct-style loop + `ToolNode`) | Lets the agent decide *how much* retrieval a question needs |
-| IaC | AWS CDK (Python), one stack | Readable, reproducible, tears down cleanly |
-| Frontend | Streamlit (thin HTTP client) | No retrieval or generation logic in the client |
+## 🧱 Architecture 
 
-**Bedrock Knowledge Bases** would have handled retrieval end-to-end but still needs a vector store
-underneath, and with pgvector in place a hand-rolled agent gives more control over blending
-semantic and keyword evidence. **Bedrock AgentCore** would have hosted the agent with managed
-memory and tracing — the natural upgrade path for conversation memory or multiple agents, but more
-operational surface than one stateless agent needs. The LLM is `openai.gpt-oss-20b-1:0` rather than
-Claude 3 Haiku; both are pay-per-token inside AWS, and swapping is a one-line change to
-`LLM_MODEL_ID` in [`backend_stack.py`](infrastructure/backend/backend_stack.py).
+Four decisions determine how far this design carries beyond a demo.
+
+### Postgres as the retrieval layer
+
+Document metadata, chunk text, and embeddings live in one database and are written in one
+transaction: a document and its chunks either both commit or neither does. Retrieval reads that
+same data, so a result cannot reference a document that no longer exists.
+
+All retrieval happens in Postgres. The same database serves ordinary CRUD over documents and chunks
+and acts as the semantic layer that ranks them. Scaling it is a resource change on the instance,
+and changing its shape is an Alembic migration.
+
+The indexes are in place: HNSW with `vector_cosine_ops` on `chunk.embedding`, so similarity search
+does not scan every row once the table holds thousands of vectors, and a trigram index on document
+text so `keyword_search`'s regex is indexed rather than scanned. Restricting ranking to one user,
+one domain, or a chosen set of documents is a `WHERE` clause.
+
+
+
+### Lambda as a container image
+
+Container packaging raises the artifact limit from 250 MB unzipped to 10 GB. Memory is
+128 MB–10,240 MB in both cases and is unaffected by packaging. The larger limit is what
+accommodates LangGraph, LangChain, SQLAlchemy, asyncpg, pypdf, python-docx and boto3 together. One
+Dockerfile produces both the docker-compose container and the deployed artifact, so local and
+deployed behaviour derive from the same image
+
+### S3 for original files
+
+Original files are stored untouched under `raw/{document_id}/`, and their metadata stays in
+Postgres. Each upload is hashed by content, so the same document is never stored twice.
+
+### Alembic for schema changes
+
+Each schema change is a versioned file: reviewable, reversible, and applied to every environment in
+the same order. The data model changes without manual DDL, and queries go through the ORM with
+bound parameters.
 
 ---
 
 ## 📁 Project Structure
 
 ```
-backend/            api/ (thin HTTP routes) · domain/ (upload pipeline, agent + scoring)
-                    models/ (SQLAlchemy, schema source of truth) · schemas/api/ (Pydantic)
-                    services/agent/ (graph, nodes + system prompt, tools, state)
-                    infrastructure/ (DB sessions — NOT the CDK app) · config/
-
-frontend/           Streamlit client — api_client.py (HTTP), ui.py (rendering)
-
-infrastructure/     CDK, one stack: network.py, database.py, storage.py, compute.py,
-                    api.py, assembled in backend_stack.py
-
-alembic/            Database migrations
-Makefile            Deploys, migrations, local dev servers
+.
+├── backend/              FastAPI service
+│   ├── api/              HTTP routes
+│   ├── domain/           upload pipeline, search
+│   ├── models/           SQLAlchemy tables
+│   ├── schemas/api/      Pydantic request/response
+│   ├── services/agent/   LangGraph agent, tools
+│   ├── infrastructure/   DB sessions (not the CDK app)
+│   └── config/           settings
+├── frontend/             Streamlit client
+├── infrastructure/       CDK, one stack
+│   └── backend/          network, database, storage, compute, api
+├── alembic/              migrations
+└── Makefile              deploys, migrations, dev servers
 ```
 
 ---
@@ -128,47 +138,9 @@ make run                         # backend on :8000  (interactive docs at /docs)
 make run-streamlit               # Streamlit client on :8501
 ```
 
-`.env` needs `DATABASE_URL=postgresql+asyncpg://rag_user:rag_password@localhost:5432/rag_db`.
-Bedrock calls still go to real AWS and are billed normally, and there is no authentication locally
-— the token is enforced by API Gateway, which isn't in the path.
-
 ### Option B — Deploy to AWS
 
-```bash
-cd infrastructure && python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
 
-cdk bootstrap                                 # once per account/region
-export DEV_ACCESS_IP=$(curl -s ifconfig.me)   # required — the DB firewall rule
-cdk deploy RagChatBackendStack --require-approval=never
-```
-
-Deploy takes 10–15 minutes, mostly RDS, and prints `ApiEndpoint`, `ApiKeyId`, `DatabaseEndpoint`,
-`UploadBucketName`, `LambdaFunctionName`. `ApiKeyId` is an identifier, not the token — exchange it
-with `aws apigateway get-api-key --api-key <ApiKeyId> --include-value --query value --output text`
-and populate `.env.prod` (gitignored). Then create the schema (**migrations do not run
-automatically**, and this runs from your machine, which is why `DEV_ACCESS_IP` matters), add
-documents, and ask a question:
-
-```bash
-make db-upgrade ENV=prod
-set -a && source .env.prod && set +a          # API_BASE_URL and API_TOKEN
-
-curl -X POST "$API_BASE_URL/api/upload/" -H "x-api-key: $API_TOKEN" -F "file=@doc.pdf"
-
-curl -s -X POST "$API_BASE_URL/api/query/" \
-  -H "x-api-key: $API_TOKEN" -H "Content-Type: application/json" \
-  -d '{"question": "What does the knowledge base cover?", "top_k": 5}' | python -m json.tool
-```
-
-For the UI: `cd frontend`, install requirements, copy `.streamlit/secrets.toml.example` to
-`secrets.toml` with `API_BASE_URL` and `API_TOKEN`, then `streamlit run app.py`.
-
-`make destroy` removes everything; the S3 bucket empties itself and RDS leaves no snapshot. The one
-leftover is the database password in Secrets Manager, billed at ~$0.40/month until its recovery
-window lapses — `aws secretsmanager delete-secret --force-delete-without-recovery` clears it.
-
----
 
 ## 📡 API Reference
 
@@ -182,55 +154,23 @@ window lapses — `aws secretsmanager delete-secret --force-delete-without-recov
 | POST | `/api/query/` | Ask the knowledge base a question |
 | GET | `/api/query/count` | Total indexed chunk count |
 
-Every route requires `x-api-key: <token>`, validated by API Gateway itself, so a request without a
-valid key never reaches the Lambda — there is no authentication logic in the application code. The
-key is created by CDK and stored in `.env.prod` and `frontend/.streamlit/secrets.toml`, both
-gitignored.
-
-`POST /api/query/` takes `question` (required, 1–1000 chars) and `top_k` (1–20, default 5), which
-caps how many source passages come back without limiting how much the agent searches internally:
-
-```json
-{
-  "answer": "Enterprise customers can request a refund within the documented refund window...",
-  "sources": [
-    { "source": "refund_policy.pdf", "chunk_index": 4,
-      "content_preview": "Enterprise refund requests must be reviewed...",
-      "similarity_score": 0.91 }
-  ],
-  "confidence_score": 0.84,
-  "confidence_breakdown": { "best_similarity": 0.91, "avg_similarity": 0.84,
-    "consistency": 0.93, "keyword_match": 0.62, "final_score": 0.84 },
-  "query": "What is the refund policy for enterprise customers?",
-  "timestamp": "2026-08-20T10:15:00"
-}
-```
+Every route requires `x-api-key: <token>`, validated by API Gateway itself
 
 ---
 
 ## 🧠 Inside the RAG Pipeline
 
-Splitting is boundary-aware — paragraphs first, then sentences, then words. Embedding calls run 16
-at a time with adaptive retries, since Titan embeds one chunk per call and throttles per account.
 
 | Tool | What it does |
 |---|---|
-| `semantic_search(concept)` | Nearest chunks by cosine distance via the HNSW index — text, filename, similarity, offsets |
-| `keyword_search(pattern)` | Case-insensitive regex over document text, guarded by a 5-second statement timeout |
+| `semantic_search(concept)` | Search similar chunk by meaning |
+| `keyword_search(pattern)` | Case-insensitive regex over document text
 | `list_documents()` | Filenames only, for questions about the corpus itself |
 | `read_document(id, start, end)` | A character range of the extracted text, capped at 8000 characters |
 
-The system prompt in `nodes.py` carries most of the behavior worth reviewing: expand every hit
-before answering, match search effort to question complexity, never state a confidence figure, and
-say plainly where the documents stop covering the question.
 
-Semantic and keyword hits accumulate as the agent works, then fuse per chunk as
-`combined = 1 - (1 - keyword) × (1 - semantic)` — the two treated as independent evidence, so the
-score is the complement of both being wrong at once. A passage both searches agree on scores higher
-than under either alone (0.80 and 0.70 fuse to 0.94); anything at or below 0.2 is noise and
-dropped. **Confidence** is derived entirely from retrieval, never asked of the model: best
-similarity, average, consistency (`1 - (best - min)`), and keyword strength. It signals that
-retrieval went well, not that the answer is correct.
+It uses the idea of P(A or B) = 1 - (1-A)(1-B) so both scorins are complementnary then 
+`combined = 1 - (1 - keyword) × (1 - semantic)` 
 
 ---
 
@@ -263,12 +203,9 @@ documents in a `sample-docs/` folder and upload them.
 |---|---|
 | Lambda, API Gateway, S3 gateway endpoint | Pay-per-use — $0 idle |
 | RDS `db.t4g.micro`, 20GB | ~$12–13/month if left running |
-| 2× VPC interface endpoints across 2 AZs | ~$14–15/month if left running |
 | Bedrock (embeddings + LLM) | Pay-per-token, near-zero at demo volume |
-| Secrets Manager | ~$0.40/month per secret |
 
-RDS and the interface endpoints bill hourly regardless of traffic and together approach the $20
-budget within a month — **run `make destroy` when evaluation is done**.
+
 
 ---
 
@@ -277,34 +214,20 @@ budget within a month — **run `make destroy` when evaluation is done**.
 *(Template — attach after a real run: the Streamlit question, the API request, the JSON response,
 and a screenshot or the relevant CloudWatch log lines.)*
 
----
-
-## ⚠️ Assumptions & Known Limitations
-
-- **Migrations aren't automatic** — a fresh deploy leaves an empty database until `make db-upgrade
-  ENV=prod` runs against it.
-- **there is no conversation memory**, so follow-ups don't resolve against
-  earlier turns.
-- **CORS is open** to all origins, and **RDS is publicly reachable** (locked to a single IP) rather
-  than fully private.
 
 ---
 
-## 🏭 Productionization — What I'd Change for Real Use
+## 🏭 Productionization
 
-The architecture is already the shape a production system would take — serverless compute behind a
-managed gateway, one database, infrastructure as code, secrets never in source. Before it carried
-real traffic it would need:
+I would change:
 
-- **Security** — RDS fully private with migrations run from inside the VPC; a Lambda authorizer
-  (JWT/Cognito) in place of the shared API key once per-user identity matters; CORS scoped to the
-  real frontend origin.
-- **Reliability and cost** — a cap on agent tool-call iterations so a pathological question can't
-  run past the gateway ceiling; the double retry (three attempts around a graph that itself retries
-  each node three times) collapsed into one bounded layer; the usage plan's throttle and quota set.
-- **Observability** — a request id generated at the API boundary, propagated through logs and into
-  the response, plus structured JSON logs and alarms on failure rate, p99 latency, and RDS
-  connections.
-- **Scaling** — two ceilings bite first: RDS connection limits, since Lambda scales out faster than
-  a `t4g.micro` accepts connections (RDS Proxy solves it), and Bedrock's per-account throttle. A
-  larger corpus would need HNSW tuning and a re-embedding strategy for model upgrades.
+- **RDS private** — move it into the isolated subnets so nothing reaches it from the internet, and
+  run migrations from inside the VPC instead of whitelisting a developer IP.
+- **Cognito login** — no shared API key; a per-user JWT validated by a Lambda authorizer, so every
+  request carries an identity and documents can be scoped to their owner.
+- **Presigned S3 upload** — the client PUTs straight to S3 instead of streaming through the API,
+  lifting API Gateway's 10 MB payload cap and the Lambda timeout out of the upload path.
+- **Scale RDS** — a larger instance plus RDS Proxy, since Lambda scales out faster than a
+  `t4g.micro` accepts connections.
+- **Add LangSmith** — traces of every agent run: which tools fired, what they returned, and where
+  the latency and tokens went.

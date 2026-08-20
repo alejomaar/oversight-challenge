@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from aws_cdk import Duration, Stack
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecr_assets as ecr_assets
@@ -8,7 +6,7 @@ from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_rds as rds
 from aws_cdk import aws_s3 as s3
 
-PROJECT_ROOT = str((Path(__file__).parent / ".." / "..").resolve() / "backend")
+from config.settings import DB_NAME, PROJECT_ROOT, resource_name
 
 
 def add_query_handler(
@@ -26,7 +24,7 @@ def add_query_handler(
         stack,
         "QueryHandler",
 
-        function_name="rag-chat-app",
+        function_name=resource_name("lambda"),
 
         code=lambda_.DockerImageCode.from_image_asset(
             directory=PROJECT_ROOT,
@@ -35,8 +33,7 @@ def add_query_handler(
 
         memory_size=1024,
 
-        # API Gateway REST APIs cut the connection at 29s regardless of this.
-        timeout=Duration.seconds(60),
+        timeout=Duration.minutes(3),
 
         vpc=vpc,
 
@@ -49,7 +46,7 @@ def add_query_handler(
             "DB_SECRET_ARN": database.secret.secret_arn,
             "DB_HOST": database.db_instance_endpoint_address,
             "DB_PORT": database.db_instance_endpoint_port,
-            "DB_NAME": "rag_db",
+            "DB_NAME": DB_NAME,
 
             "S3_BUCKET_NAME": upload_bucket.bucket_name,
 

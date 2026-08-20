@@ -2,6 +2,8 @@ from aws_cdk import CfnOutput, Stack
 from aws_cdk import aws_apigateway as apigw
 from aws_cdk import aws_lambda as lambda_
 
+from config.settings import resource_name
+
 
 def add_api(stack: Stack, handler: lambda_.IFunction) -> apigw.RestApi:
     """Public REST API in front of the query Lambda, gated by an API key."""
@@ -10,7 +12,7 @@ def add_api(stack: Stack, handler: lambda_.IFunction) -> apigw.RestApi:
         stack,
         "Api",
 
-        rest_api_name="rag-chat-api",
+        rest_api_name=resource_name("api"),
 
         binary_media_types=["multipart/form-data"],
 
@@ -22,6 +24,9 @@ def add_api(stack: Stack, handler: lambda_.IFunction) -> apigw.RestApi:
     )
 
     api.root.add_proxy(
+        # REST API integrations are hard-capped at 29s unless the account's
+        # "Maximum integration timeout" quota is raised, so this stays default
+        # even though the Lambda behind it is allowed 3 minutes.
         default_integration=apigw.LambdaIntegration(handler),
         any_method=True,
         default_method_options=apigw.MethodOptions(
@@ -29,11 +34,11 @@ def add_api(stack: Stack, handler: lambda_.IFunction) -> apigw.RestApi:
         ),
     )
 
-    api_key = api.add_api_key("ApiKey", api_key_name="rag-chat-api-key")
+    api_key = api.add_api_key("ApiKey", api_key_name=resource_name("api-key"))
 
     usage_plan = api.add_usage_plan(
         "UsagePlan",
-        name="rag-chat-usage-plan",
+        name=resource_name("usage-plan"),
         api_stages=[
             apigw.UsagePlanPerApiStage(
                 stage=api.deployment_stage,

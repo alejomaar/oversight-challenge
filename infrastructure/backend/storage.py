@@ -1,6 +1,8 @@
 from aws_cdk import RemovalPolicy, Stack
 from aws_cdk import aws_s3 as s3
 
+from config.settings import global_resource_name
+
 
 def add_upload_bucket(stack: Stack) -> s3.Bucket:
     """Holds the original uploaded files. Extracted text, chunks and
@@ -11,7 +13,7 @@ def add_upload_bucket(stack: Stack) -> s3.Bucket:
         stack,
         "UploadBucket",
 
-        bucket_name="rag-chat-document-bucket",
+        bucket_name=global_resource_name(stack, "documents"),
 
         versioned=True,
 

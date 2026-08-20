@@ -1,14 +1,13 @@
 from aws_cdk import CfnOutput, Stack
 from constructs import Construct
 
+from config.settings import EMBEDDINGS_MODEL_ID, LLM_MODEL_ID
+
 from .api import add_api
 from .compute import add_query_handler
 from .database import add_database
 from .network import add_network
 from .storage import add_upload_bucket
-
-EMBEDDINGS_MODEL_ID = "amazon.titan-embed-text-v2:0"
-LLM_MODEL_ID = "openai.gpt-oss-20b-1:0"
 
 
 class BackendStack(Stack):

@@ -1,9 +1,10 @@
-import os
 import string
 
 from aws_cdk import Duration, RemovalPolicy, Stack
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_rds as rds
+
+from config.settings import DB_NAME, DEV_ACCESS_IP, resource_name
 
 
 def add_database(stack: Stack, vpc: ec2.Vpc) -> rds.DatabaseInstance:
@@ -25,9 +26,9 @@ def add_database(stack: Stack, vpc: ec2.Vpc) -> rds.DatabaseInstance:
             version=rds.PostgresEngineVersion.VER_16,
         ),
 
-        database_name="rag_db",
+        database_name=DB_NAME,
 
-        instance_identifier="rag-chat-db",
+        instance_identifier=resource_name("db"),
 
         credentials=rds.Credentials.from_generated_secret(
             "rag_user",
@@ -55,7 +56,7 @@ def add_database(stack: Stack, vpc: ec2.Vpc) -> rds.DatabaseInstance:
     )
 
     database.connections.allow_default_port_from(
-        ec2.Peer.ipv4(f"{os.environ['DEV_ACCESS_IP']}/32"),
+        ec2.Peer.ipv4(f"{DEV_ACCESS_IP}/32"),
         "Local dev access to Postgres",
     )
 

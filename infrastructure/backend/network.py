@@ -1,6 +1,8 @@
 from aws_cdk import Stack
 from aws_cdk import aws_ec2 as ec2
 
+from config.settings import resource_name
+
 
 def add_network(stack: Stack) -> ec2.Vpc:
     """Isolated-subnet VPC with no NAT gateway, the single largest idle cost
@@ -15,7 +17,7 @@ def add_network(stack: Stack) -> ec2.Vpc:
         stack,
         "Vpc",
 
-        vpc_name="rag-chat-vpc",
+        vpc_name=resource_name("vpc"),
 
         max_azs=2,
 
