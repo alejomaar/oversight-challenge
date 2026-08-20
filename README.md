@@ -89,14 +89,11 @@ bound parameters.
 
 ### One naming convention for every resource
 
-Nothing is named by hand. Every name follows `<project>-<environment>-<resource>` —
-`rag-chat-prod-db`, `rag-chat-prod-lambda` — plus the account id where the namespace is global, as
-with S3: `rag-chat-prod-documents-<account-id>`.
+Every name follows `<project>-<environment>-<resource>`, so the name itself says which project a
+resource belongs to, which environment it runs in, and what it is. Where the namespace is global,
+the account id is appended.
 
-Because the environment sits in every name, dev, staging, and prod coexist without collisions. That
-makes the prefix worth having: `rag-chat-prod-*` filters a bill, scopes a log query, and lets one
-IAM wildcard replace a list of ARNs. Deriving names from a single definition is what keeps this
-true — hand-typed conventions drift, and the filters then stop matching without failing.
+Because the environment is part of every name, dev, staging, and prod never collide.
 
 ---
 
@@ -161,16 +158,41 @@ Every route requires `x-api-key: <token>`, validated by API Gateway itself.
 
 ## 🧠 Inside the RAG Pipeline
 
+**Sample documents.** `sample_docs/` holds eleven PDFs — ML papers, medical reports, marketing and
+design texts
+
+**Seeding.** Nothing is preloaded. The samples are uploaded through the API or the Streamlit client
+like any other file, so ingestion is part of the solution rather than out of scope.
+
+**Chunking.** Extracted text is split into 1000-character chunks with 200 characters of overlap,
+each recording its offsets into the document. Every chunk is embedded with Titan v2 (1024
+dimensions) into the `chunk` table; the full text stays on the document row, so any hit can be
+expanded back into its surrounding passage.
+
+**Retrieval.** The agent chooses, and may run several rounds:
+
 | Tool | What it does |
 |---|---|
-| `semantic_search(concept)` | Finds the chunks closest in meaning |
-| `keyword_search(pattern)` | Case-insensitive regex over the document text |
+| `semantic_search(concept)` | Cosine similarity over the embeddings — the 5 closest chunks, with their text |
+| `keyword_search(pattern)` | Case-insensitive regex over the chunk text — locations only, no text |
 | `list_documents()` | Filenames only, for questions about the corpus itself |
 | `read_document(id, start, end)` | A character range of the extracted text, capped at 8000 characters |
 
-Keyword and semantic scores are combined the way independent probabilities are —
-P(A or B) = 1 − (1 − A)(1 − B) — so the two are complementary and either one alone can carry the
-confidence up:
+**Prompt.** One system prompt — persona, task, tool descriptions, search strategy, output rules —
+followed by the question and every tool result so far. Chunk text reaches the model in full.
+
+**Grounding.** The prompt confines the answer to what the documents say and requires reading the
+surrounding context before answering, since a chunk is cut at an arbitrary boundary. Where the
+evidence is partial, the answer says where it stops.
+
+**Scoring across tool calls.** Both signals accumulate per chunk, keyed by `chunk_id`, and a repeat
+hit keeps the *higher* score instead of adding to it — searching the same passage twice never
+inflates it. Semantic search contributes `1 − cosine_distance` per chunk. Keyword search scores per
+call rather than per chunk: `1 − matched_documents / (total_documents + 1)`, so a pattern found in
+few documents is rare and scores high, and every chunk that call matched carries that score. When
+the agent stops, the two are fused over the union of their chunks — anything at or below 0.2 is
+dropped as noise — treating them as independent evidence, so a chunk found both ways outranks one
+found either way alone:
 
 `combined = 1 − (1 − keyword) × (1 − semantic)`
 
