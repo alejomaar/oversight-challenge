@@ -37,7 +37,7 @@ Your file ──▶ [1] saved as-is to S3 ──▶ [2] text extracted ──▶
 ```
 
 1. The original file is stored untouched in S3, so the source remains recoverable.
-2. Text is extracted — `pypdf` for PDF, `python-docx` for Word, direct decode for `.txt`.
+2. Text is extracted, using the appropriate reader for the file type.
 3. The text is split into ~1000-character chunks with 200 characters of overlap. Each chunk records
    its start and end offset in the original text, which is what later allows a search hit to be
    expanded back into its surrounding context.
@@ -151,13 +151,11 @@ before answering.
 
 ### Networking
 
-The Lambda runs in private isolated subnets, which have no route to the internet. It still needs
-Bedrock, S3, and Secrets Manager, and the conventional way to provide that is a NAT gateway —
-which bills roughly $32/month regardless of traffic and would dominate the cost of this design.
-
-VPC endpoints replace it, routing from inside the VPC directly to an AWS service. S3 uses a gateway
-endpoint (free); Bedrock and Secrets Manager use interface endpoints (~$0.01/hour per availability
-zone). Cheaper than NAT, and traffic never traverses the public internet.
+The Lambda runs in private isolated subnets with no route to the internet, and reaches Bedrock, S3,
+and Secrets Manager through VPC endpoints — private routes from inside the VPC directly to an AWS
+service. S3 uses a gateway endpoint (free); Bedrock and Secrets Manager use interface endpoints
+(~$0.01/hour per availability zone). Traffic never traverses the public internet, and the design
+carries no per-hour egress infrastructure.
 
 The database is the deliberate exception: it sits in a public subnet so migrations and inspection
 can be run from a developer machine, with its security group restricted to the single address in
@@ -184,16 +182,6 @@ can be run from a developer machine, with its security group restricted to the s
 that avoids scanning every vector as the corpus grows, trading a small amount of recall for a large
 speedup.
 
-Two AWS-managed alternatives sit next to these choices worth naming. **Bedrock Knowledge Bases**
-would have handled retrieval end-to-end, but it still needs a vector store underneath — either
-OpenSearch Serverless or RDS pgvector — and with pgvector already doing the job, a hand-rolled
-agent gives more control over blending semantic and keyword evidence and expanding a hit into its
-full surrounding context, which a managed KB's fixed retrieve-then-generate flow doesn't expose.
-**Bedrock AgentCore** would have hosted the agent itself, with managed session memory and tracing
-— genuinely useful, but for a single agent answering one question per request, a LangGraph graph
-inside one Lambda is simpler to build, deploy, and tear down, and it's the natural upgrade path if
-this ever needs conversation memory or several cooperating agents (see
-[Productionization](#-productionization--what-id-change-for-real-use)).
 
 <a name="model-choice"></a>The LLM is also a deliberate choice, not the brief's suggested default:
 the brief points at Claude 3 Haiku for near-zero inference cost, but this deployment uses Bedrock's
@@ -244,24 +232,9 @@ infrastructure/          The AWS definition (CDK, Python). One stack, split by c
   backend/backend_stack.py  Assembles all of the above; model IDs are set here
 
 alembic/                 Database migrations (versioned schema changes)
-testing/                 Scripts that call the DEPLOYED API. Not unit tests — these cost real money.
-docker-compose.yml       Run Postgres + backend + frontend locally, no AWS deploy needed
-Makefile                 Shortcuts for everything below
+docker-compose.yml       Local Postgres for development
+Makefile                 Shortcuts for deploys, migrations, and the local dev servers
 ```
-
-**Where to change what:**
-
-| I want to… | Edit |
-|---|---|
-| Change how the agent behaves / its instructions | `backend/services/agent/nodes.py` (the system prompt) |
-| Add a new capability the agent can use | `backend/services/agent/tools.py` |
-| Change chunk size or overlap | `backend/config/settings.py` |
-| Change which AI model is used | `infrastructure/backend/backend_stack.py`, then redeploy |
-| Add a database column | `backend/models/`, then generate a migration |
-| Add an API endpoint | `backend/api/` + a schema in `backend/schemas/api/` |
-| Change how confidence is calculated | `backend/domain/search.py` |
-
----
 
 ## 🚀 Getting Started
 
@@ -273,14 +246,13 @@ Makefile                 Shortcuts for everything below
 | **Docker**, running | The Lambda is packaged as a container image, and local dev uses docker-compose | `docker ps` |
 | **AWS CLI**, configured | CDK and the helper scripts use your credentials | `aws sts get-caller-identity` |
 | **AWS CDK CLI** | Turns the Python infrastructure code into real AWS resources | `npm install -g aws-cdk` then `cdk --version` |
-| **Bedrock model access** | Bedrock models are opt-in per account **and per region** | Bedrock console → Model access |
 
-Model access is worth confirming before deploying: without it the stack deploys cleanly and then
-every query fails with `AccessDeniedException`. Enable both the embedding model and the chat model
-in the deployment region.
 
-Each of the three areas keeps its own virtualenv, and nothing is installed globally — commands run
-without activating the right one fail with import errors.
+Bedrock model access is opt-in per account and per region, and worth confirming before deploying:
+enable both the embedding model and the chat model in the deployment region.
+
+Each of the three areas keeps its own virtualenv, and nothing is installed globally — activate the
+right one before running anything in it.
 
 ---
 
@@ -348,29 +320,28 @@ pip install -r requirements.txt
 cdk bootstrap
 ```
 
-CDK needs somewhere to upload the Docker image and templates it builds. `bootstrap` creates that
-staging area once. Skipping it produces an error along the lines of *"This stack uses assets,
-so the toolkit stack must be deployed"*.
+CDK needs a staging area in the account to upload the Docker image and templates it builds.
+`bootstrap` creates it once per account and region.
 
-#### Step 3 — Tell it which IP may reach the database
+#### Step 3 — Set the IP allowed to reach the database
 
 ```bash
 export DEV_ACCESS_IP=$(curl -s ifconfig.me)
 ```
 
-This becomes the single-IP firewall rule on the database. It's **required** — without it, `cdk
-synth` fails immediately with a `KeyError: 'DEV_ACCESS_IP'`. Re-export it if your IP changes (home
-vs. office vs. VPN), or you'll be locked out of your own database.
+This becomes the single-IP firewall rule on the database, and is required for both synth and
+deploy. Re-export it whenever your address changes — home, office, VPN — and redeploy, otherwise
+the database is no longer reachable from your machine.
 
-#### Step 4 — Check, then deploy
+#### Step 4 — Synthesize, then deploy
 
 ```bash
-cdk synth    # renders the CloudFormation template; catches errors without touching AWS
+cdk synth    # renders the CloudFormation template locally
 cdk deploy RagChatBackendStack --require-approval=never
 ```
 
-`synth` is a dry run and catches most configuration errors locally. `deploy` takes roughly 10–15
-minutes on a fresh account, most of it provisioning RDS.
+`synth` is a dry run against the local definition and touches nothing in AWS. `deploy` takes
+roughly 10–15 minutes on a fresh account, most of it provisioning RDS.
 
 When it finishes, CDK prints the **outputs** — save these, every following step needs them:
 
@@ -404,23 +375,27 @@ make db-upgrade ENV=prod
 
 The migrations in `alembic/versions/` build the schema from nothing when run in order: enable the
 `vector` and `pg_trgm` extensions, create the `document` and `chunk` tables, add the HNSW index.
-Skipping this step leaves every request failing with "relation does not exist".
 
-This runs from your machine, over the internet, to the database — which is exactly why Step 3's
+This runs from your machine, over the internet, to the database — which is why Step 3's
 `DEV_ACCESS_IP` matters.
 
-#### Step 7 — Put some documents in
+#### Step 7 — Add documents
+
+Load the deploy values into your shell, then upload:
 
 ```bash
-set -a && source .env.prod && set +a          # load API_BASE_URL and API_TOKEN into your shell
-python testing/upload_batch.py path/to/doc1.pdf path/to/doc2.txt
+set -a && source .env.prod && set +a          # API_BASE_URL and API_TOKEN
+
+curl -X POST "$API_BASE_URL/api/upload/" \
+  -H "x-api-key: $API_TOKEN" \
+  -F "file=@path/to/document.pdf"
 ```
 
-Verify they landed:
+Confirm what's indexed:
 
 ```bash
-python testing/list_files.py
-python testing/query_count.py    # how many chunks are indexed
+curl -s "$API_BASE_URL/api/files/" -H "x-api-key: $API_TOKEN" | python -m json.tool
+curl -s "$API_BASE_URL/api/query/count" -H "x-api-key: $API_TOKEN"
 ```
 
 #### Step 8 — Run the Streamlit client
@@ -438,10 +413,10 @@ cp .streamlit/secrets.toml.example .streamlit/secrets.toml
 streamlit run app.py
 ```
 
-Opens at `http://localhost:8501`. Click **Check connection** in the sidebar first — it confirms the
-URL and token are wired up before you waste a question on a misconfiguration.
+Opens at `http://localhost:8501`. **Check connection** in the sidebar confirms the URL and token are
+wired up before asking anything.
 
-#### Step 9 — Ask something
+#### Step 9 — Ask a question
 
 Through the UI, or straight from the terminal:
 
@@ -452,26 +427,8 @@ curl -s -X POST "$API_BASE_URL/api/query/" \
   -d '{"question": "What does the knowledge base cover?", "top_k": 5}' | python -m json.tool
 ```
 
-or the scripted equivalent:
-
-```bash
-python testing/query.py "What does the knowledge base cover?"
-```
-
----
-
-### 🔧 Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `KeyError: 'DEV_ACCESS_IP'` on synth/deploy | Env var not set | `export DEV_ACCESS_IP=$(curl -s ifconfig.me)` |
-| `BucketAlreadyExists` on deploy | The bucket name is hardcoded, and S3 names are globally unique across all AWS accounts | Change `bucket_name` in `infrastructure/backend/storage.py` to something unique |
-| `{"message":"Forbidden"}` | Missing or wrong `x-api-key` | You probably used `ApiKeyId` instead of the key *value* — see Step 5 |
-| `relation "document" does not exist` | Migrations never ran | `make db-upgrade ENV=prod` |
-| Migration hangs, then times out | Your IP isn't the one allowed on the DB | Re-export `DEV_ACCESS_IP` and redeploy, or update the security group in the console |
-| `AccessDeniedException` from Bedrock | Model access not enabled in this region | Bedrock console → Model access → enable both models |
-| First request takes ~10s, later ones are fast | Lambda cold start | Expected — see the Lambda note in [Architecture](#what-each-box-is) |
-| Query returns a gateway timeout | API Gateway caps a request at 29s; a multi-search question can exceed it | Ask a narrower question, or see [Known Limitations](#known-limitations) |
+The first request after an idle period includes the Lambda cold start and takes noticeably longer
+than subsequent ones.
 
 ---
 
@@ -493,8 +450,7 @@ it immediately:
 aws secretsmanager delete-secret --secret-id <name> --force-delete-without-recovery
 ```
 
-Afterwards, confirm nothing is left in the CloudFormation console — a stack stuck in
-`DELETE_FAILED` usually means a resource still has something in it.
+Afterwards, confirm the stack is gone from the CloudFormation console and no resources remain.
 
 ---
 
@@ -526,22 +482,14 @@ Every route requires this header:
 x-api-key: <token>
 ```
 
-It's checked by API Gateway itself, before your code runs — there's no authentication logic
-anywhere in the application. A request with a missing or wrong key never reaches the Lambda:
-
-```
-403 Forbidden
-{ "message": "Forbidden" }
-```
-
-That body is API Gateway's own format, not this project's. Normalizing it would require a custom
-Lambda authorizer — see [Known Limitations](#known-limitations).
+It is validated by API Gateway itself, so a request without a valid key is rejected at the edge and
+never reaches the Lambda. There is no authentication logic anywhere in the application code.
 
 **How the token is managed:**
 - Created by CDK (`add_api_key` in `infrastructure/backend/api.py`) — never hardcoded in source.
 - Retrieved after deploy with the `aws apigateway get-api-key` command in Step 5.
-- Stored in `.env.prod` (for scripts) and `frontend/.streamlit/secrets.toml` (for the UI). Both are
-  gitignored. `frontend/api_client.py` attaches it to every request.
+- Stored in `.env.prod` (for command-line use) and `frontend/.streamlit/secrets.toml` (for the UI).
+  Both are gitignored. `frontend/api_client.py` attaches it to every request.
 
 ### `POST /api/query/`
 
@@ -601,16 +549,6 @@ This differs slightly from the schema in the brief: sources are flattened (no se
 block (`model`, `request_id`, `latency_ms`) yet. Both noted in
 [Known Limitations](#known-limitations).
 
-### Error responses
-
-| Case | Status | Body |
-|---|---|---|
-| Missing/invalid `x-api-key` | 403 | `{"message": "Forbidden"}` — from API Gateway, before the Lambda runs |
-| Invalid request body (e.g. empty `question`) | 422 | FastAPI's default `{"detail": [...]}` |
-| Duplicate upload (same content hash) | 409 | `{"detail": "A document with identical content already exists in the knowledge base"}` |
-| Unknown `file_id` | 404 | `{"detail": "File not found"}` |
-| Unhandled server error | 500 | FastAPI default, no redaction applied |
-
 ---
 
 ## 🧠 Inside the RAG Pipeline
@@ -622,14 +560,14 @@ The implementation detail behind [How It Works](#-how-it-works).
 Three steps, in order:
 
 1. **ingest** — original bytes to S3 under `raw/{document_id}/{filename}`.
-2. **transform** — text extraction: `pypdf`, `python-docx`, or a UTF-8 decode.
-3. **index** — `RecursiveCharacterTextSplitter` (1000 chars, 200 overlap, `add_start_index=True` so
-   each chunk records its character offset), then one Titan embedding call per chunk, then a single
-   database transaction inserting the document and all its chunks.
+2. **transform** — text extraction per file type.
+3. **index** — split into 1000-character chunks with 200 overlap, each recording its character
+   offset in the source text, then one Titan embedding call per chunk, then a single database
+   transaction inserting the document and all its chunks.
 
-The splitter breaks on paragraph boundaries first, then sentences, then words, falling back to a
-hard character cut only when nothing better is available — so chunks land on natural boundaries far
-more often than under fixed-width splitting.
+Splitting is boundary-aware: it breaks on paragraphs first, then sentences, then words, falling
+back to a hard character cut only when nothing better is available — so chunks land on natural
+boundaries far more often than under fixed-width splitting.
 
 Embedding calls run 16 at a time with adaptive retries. Titan embeds one chunk per call, so a
 200-chunk document processed sequentially is 200 round trips of pure latency. The concurrency bound
@@ -695,13 +633,13 @@ document was right.
 A full document-ingestion workflow was optional in the brief; this project implements one anyway,
 so the knowledge base can be filled either way:
 
-1. **Streamlit uploader** — drag files into the sidebar, it POSTs to `/api/upload/`.
-2. **Script** — `testing/upload.py` or `testing/upload_batch.py`, same auth as everything else.
+1. **Streamlit uploader** — drag files into the sidebar, which posts them to `/api/upload/`.
+2. **Direct API call** — `POST /api/upload/` as shown in Step 7, using the same token as every
+   other route.
 
-`testing/assets/` currently holds two PDFs (`transformers.pdf`, `word2vec.pdf` — ML papers) used
-while developing the ingestion path. **These are not the business-style sample set (refund policy,
-FAQ, handbook) the brief's example query implies** — a known gap: drop 3–5 short business documents
-into a `sample-docs/` folder and run them through `upload_batch.py` before a review demo.
+The documents used during development are ML papers rather than the business-style set (refund
+policy, FAQ, handbook) the brief's example query implies. Before a review demo, place 3–5 short
+business documents in a `sample-docs/` folder and upload them through either route above.
 
 ---
 
@@ -753,12 +691,12 @@ the request id and latency. Nothing here should be filled in without actually ha
 
 <a name="known-limitations"></a>
 
-- **Migrations aren't automatic** — a fresh `cdk deploy` leaves an empty database until you run
-  `make db-upgrade ENV=prod` yourself. Easy to forget; the failure looks like a 500 on every call.
+- **Migrations aren't automatic** — a fresh `cdk deploy` leaves an empty database until
+  `make db-upgrade ENV=prod` is run against it.
 - **The S3 bucket name is hardcoded**, and S3 names are globally unique across all of AWS, so a
   deploy into a different account collides. Change it in `infrastructure/backend/storage.py`.
 - **No `metadata` in query responses** — no `request_id`, `latency_ms`, or `model`, which makes
-  correlating a user-reported problem with a CloudWatch log entry harder than it should be.
+  correlating a request with its CloudWatch log entry harder than it should be.
 - **`explain_like_10` is accepted but not implemented** — echoed back as `explain_mode`, but it
   doesn't change the generated answer.
 - **`top_k` shapes returned sources, not retrieval depth** — the agent decides how much to search;
@@ -773,11 +711,10 @@ the request id and latency. Nothing here should be filled in without actually ha
   minutes and the agent has no hard cap on tool-call iterations. A question triggering several
   rounds of search can time out at the gateway while the Lambda is still working.
 - **Retries stack** — `api/query.py` retries the whole agent 3× and the graph retries each node 3×,
-  so a persistently failing request can cost far more than one run.
-- **`docker-compose up` is partly broken** — the `frontend` service builds a `frontend/Dockerfile`
-  that doesn't exist, and the `backend` service builds the Lambda image (entrypoint `index.handler`)
-  rather than a web server. Only the `pgvector` service is usable as-is; local dev runs through
-  `make run` / `make run-streamlit`.
+  so a request that keeps failing can cost far more than one run.
+- **`docker-compose` only covers Postgres** — the `frontend` service references a Dockerfile that
+  isn't in the repo, and the `backend` service builds the Lambda image rather than a web server.
+  Local development runs through `make run` / `make run-streamlit` instead.
 - **RDS is publicly reachable** (locked to a single IP) rather than fully private — a deliberate
   tradeoff for local migration/inspection convenience.
 
@@ -791,8 +728,6 @@ the request id and latency. Nothing here should be filled in without actually ha
 - Replace the API Gateway API key with a Lambda authorizer (JWT/Cognito) if this ever needs
   per-user identity instead of one shared token; API keys don't expire or scope per caller.
 - Scope CORS to the actual frontend origin(s).
-- Normalize error responses into `{error, message, request_id}` and stop leaking framework-default
-  bodies (FastAPI `detail`, API Gateway `message`) directly to callers.
 
 **Reliability / cost control**
 - Cap agent tool-call iterations (`recursion_limit` on the LangGraph invocation) so a pathological
@@ -802,11 +737,11 @@ the request id and latency. Nothing here should be filled in without actually ha
   by default).
 
 **Observability**
-- Add a request id generated at the API boundary, propagate it through logs and into the response
-  `metadata` block, and switch `logging.basicConfig` to structured JSON logs so CloudWatch Insights
-  queries are actually usable.
-- A CloudWatch dashboard/alarm on Lambda error rate, p99 latency, and RDS connections would catch
-  regressions before a user reports them.
+- Add a request id generated at the API boundary, propagate it through the logs and into the
+  response `metadata` block, and emit structured JSON logs so CloudWatch Insights queries are
+  usable.
+- A CloudWatch dashboard and alarms on Lambda failure rate, p99 latency, and RDS connections would
+  surface regressions before a user reports them.
 
 **Data lifecycle**
 - Automate the Alembic migration as part of deploy (CDK custom resource or a cold-start guard) so
