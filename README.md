@@ -7,14 +7,11 @@ entirely on AWS, and a small local Streamlit app is the chat window you talk to 
 
 ## ✨ Key Features
 
-- 📄 **Upload almost anything** — PDF, Word, or plain text. Uploading the same file twice is caught automatically, so the knowledge base never fills up with duplicates.
-- 🔍 **Finds the right passage two ways at once** — by meaning, so a paraphrased question still works, and by exact wording, so names, codes, and quoted phrases aren't missed.
-- 🤖 **Searches like a person would** — it decides how much digging a question needs and reads the full passage around anything it finds, instead of grabbing a fixed number of disconnected snippets.
-- 📊 **Shows its work** — every answer comes with the exact passages it was built from, so it can be checked, not just trusted.
-- 🎯 **Says how sure it is** — a confidence score with a breakdown of what drove it, not one number to take on faith.
-- 🔐 **Locked behind an access token** — no one can call the API without one.
-- 🏗️ **Deploys and tears down with one command** — the whole AWS setup is defined as code, nothing clicked together by hand.
-- 💸 **Costs next to nothing when no one's using it** — no servers running around the clock.
+- 📄 **Upload almost anything** — PDF, Word, or plain text, with duplicate uploads rejected automatically.
+- 🔍 **Finds the right passage two ways at once** — by meaning, so paraphrased questions work, and by exact wording, so names and codes aren't missed.
+- 🤖 **Searches like a person would** — it decides how much digging a question needs and reads the full passage around anything it finds.
+- 📊 **Shows its work** — every answer carries the passages it was built from and a confidence score with its breakdown.
+- 🔐 **Locked behind an access token**, deployed and torn down with one command, and costing nothing while idle.
 
 ---
 
@@ -24,17 +21,6 @@ The system has two paths: **ingestion**, which turns an uploaded file into searc
 **query**, which answers a question from those records.
 
 ### Ingestion
-
-```
-Your file ──▶ [1] saved as-is to S3 ──▶ [2] text extracted ──▶ [3] split into chunks
-                                                                       │
-                                                                       ▼
-                                              [5] chunks + embeddings saved to Postgres
-                                                                       ▲
-                                                                       │
-                                              [4] each chunk sent to an AI model
-                                                  that returns its embedding
-```
 
 1. The original file is stored untouched in S3, so the source remains recoverable.
 2. Text is extracted, using the appropriate reader for the file type.
@@ -73,26 +59,14 @@ Your question
         Final answer + the passages it used + a confidence score
 ```
 
-The model receives the question, may request one or more tool calls, receives their results, and
-then either requests further calls or produces the final answer. LangGraph manages that loop and
-the state carried through it.
-
 The justification for the added complexity is that a fixed pipeline applies identical retrieval
-effort to every question, which is rarely appropriate:
-
-- A narrow factual question — *"What is the refund window for enterprise customers?"* — is resolved
-  by one targeted search and one expanded read. A fixed top-5 would contribute four passages of
-  noise to the prompt.
-- A comparative question — *"How does the escalation process in the support policy differ from the
-  SLA?"* — requires several searches across multiple documents, each expanded before the comparison
-  is sound.
-- A question about the corpus itself — *"Which documents are available?"* — requires no retrieval at
-  all.
+effort to every question, which is rarely appropriate: a narrow factual question is resolved by one
+targeted search and one expanded read, a comparative question needs several searches across
+documents, and a question about the corpus itself needs no retrieval at all.
 
 `read_document` is the tool that most affects answer quality. A search hit is a chunk cut at an
-arbitrary boundary, so it may begin mid-sentence or stop short of a qualifying clause that changes
-its meaning. The prompt requires the agent to expand each hit to its complete paragraph or section
-before answering.
+arbitrary boundary, so the prompt requires the agent to expand each hit to its complete paragraph
+or section before answering.
 
 ---
 
@@ -133,29 +107,25 @@ before answering.
 
 ### The components
 
-- **API Gateway** — the managed HTTPS front door. Validates the API key and forwards to the Lambda;
-  no web server to run or patch.
-- **Lambda** — the API process, billed per request and per millisecond of execution, nothing while
-  idle. The tradeoff is cold start: the first request after an idle period waits on container boot,
-  a few seconds here given the image size.
+- **API Gateway** — managed HTTPS front door. Validates the API key and forwards to the Lambda.
+- **Lambda** — the API process, billed per request, nothing while idle. The tradeoff is cold start
+  on the first request after an idle period.
 - **Mangum** — adapts Lambda's event format to ASGI, so the same FastAPI app runs unchanged as a
-  Lambda and as a local `uvicorn` server.
+  Lambda and as a local server.
 - **RDS Postgres** — the knowledge base itself. `pgvector` supplies the vector column type and
-  similarity operators, keeping retrieval a SQL query rather than a second datastore to synchronize;
-  `pg_trgm` backs fuzzy text matching.
+  similarity operators, keeping retrieval a SQL query rather than a second datastore to
+  synchronize; `pg_trgm` backs fuzzy text matching.
 - **S3** — original uploaded files only. Postgres is authoritative for everything the agent reads.
 - **Bedrock** — managed model inference inside AWS: Titan for embeddings, a chat model for
   generation.
-- **Secrets Manager** — holds the generated database password, read by the Lambda at cold start
-  rather than passed in as an environment variable.
+- **Secrets Manager** — holds the generated database password, read by the Lambda at cold start.
 
 ### Networking
 
 The Lambda runs in private isolated subnets with no route to the internet, and reaches Bedrock, S3,
 and Secrets Manager through VPC endpoints — private routes from inside the VPC directly to an AWS
-service. S3 uses a gateway endpoint (free); Bedrock and Secrets Manager use interface endpoints
-(~$0.01/hour per availability zone). Traffic never traverses the public internet, and the design
-carries no per-hour egress infrastructure.
+service. Traffic never traverses the public internet, and the design carries no per-hour egress
+infrastructure.
 
 The database is the deliberate exception: it sits in a public subnet so migrations and inspection
 can be run from a developer machine, with its security group restricted to the single address in
@@ -169,268 +139,119 @@ can be run from a developer machine, with its security group restricted to the s
 |---|---|---|
 | API compute | AWS Lambda (Docker image via Mangum) | Pay-per-invocation, zero idle cost, fits FastAPI unchanged |
 | API entry point | Amazon API Gateway (REST) | Managed auth (API key + usage plan) without writing an authorizer |
-| Vector store | RDS Postgres + pgvector (HNSW index) | One database holds metadata, extracted text, and embeddings together — nothing else to run or keep in sync |
-| Keyword search | Postgres `pg_trgm` / `~*` regex | Free — no separate search engine for a small corpus |
+| Vector store | RDS Postgres + pgvector (HNSW index) | One database holds metadata, text, and embeddings — nothing else to run or keep in sync |
+| Keyword search | Postgres `pg_trgm` / `~*` regex | No separate search engine for a small corpus |
 | Embeddings | Bedrock Titan `amazon.titan-embed-text-v2:0` | AWS-native, cheap, no data leaves AWS |
-| LLM | Bedrock `openai.gpt-oss-20b-1:0` | AWS-hosted, pay-per-token, no data leaves AWS ([model choice explained below](#model-choice)) |
-| Orchestration | LangGraph (ReAct-style single-node loop + `ToolNode`) | Lets the agent decide *how much* retrieval a question needs instead of a fixed pipeline |
+| LLM | Bedrock `openai.gpt-oss-20b-1:0` | AWS-hosted, pay-per-token, no data leaves AWS |
+| Orchestration | LangGraph (ReAct-style loop + `ToolNode`) | Lets the agent decide *how much* retrieval a question needs |
 | Storage | S3 (original files only) | Provenance only — Postgres is authoritative for content |
-| IaC | AWS CDK (Python), one stack | Readable, no cross-account bootstrapping beyond default CDK assets |
-| Frontend | Streamlit (thin HTTP client) | No retrieval/generation logic in the client — everything runs behind the API |
+| IaC | AWS CDK (Python), one stack | Readable, reproducible, tears down cleanly |
+| Frontend | Streamlit (thin HTTP client) | No retrieval or generation logic in the client |
 
-**HNSW** is the index type on the embedding column — an approximate nearest-neighbor structure
-that avoids scanning every vector as the corpus grows, trading a small amount of recall for a large
-speedup.
-
-
-<a name="model-choice"></a>The LLM is also a deliberate choice, not the brief's suggested default:
-the brief points at Claude 3 Haiku for near-zero inference cost, but this deployment uses Bedrock's
-`openai.gpt-oss-20b-1:0` — also pay-per-token, also never leaves AWS, comparably cheap at this
-volume, and already proven out during development. Swapping to Haiku is a one-line change
-(`LLM_MODEL_ID` in [`infrastructure/backend/backend_stack.py`](infrastructure/backend/backend_stack.py)),
-with nothing else affected, if the sandbox account's budget calls for it.
+**Bedrock Knowledge Bases** would have handled retrieval end-to-end, but it still needs a vector
+store underneath, and with pgvector already in place a hand-rolled agent gives more control over
+blending semantic and keyword evidence. **Bedrock AgentCore** would have hosted the agent itself
+with managed memory and tracing — the natural upgrade path if this ever needs conversation memory
+or several cooperating agents, but more operational surface than one stateless agent requires
+today. The LLM is `openai.gpt-oss-20b-1:0` rather than the suggested Claude 3 Haiku; both are
+pay-per-token inside AWS, and swapping is a one-line change to `LLM_MODEL_ID` in
+[`backend_stack.py`](infrastructure/backend/backend_stack.py).
 
 ---
 
 ## 📁 Project Structure
 
-Three independently deployable areas. The rule while working in this repo: **pick one area and stay
-in it** — a change to the backend shouldn't drag in the CDK app or the Streamlit client.
-
 ```
-backend/                 The API. Runs as a Lambda in AWS, as uvicorn locally.
-  api/                    HTTP routes only — parse request, call domain/, return response.
-                          Deliberately thin: no business logic here.
-  domain/                 The actual logic.
-                            document.py — upload pipeline (S3 → extract → chunk → embed → save),
-                                          plus list/get/delete
-                            search.py   — runs the agent, fuses the search scores, builds the
-                                          response with sources + confidence
-  models/                 Database tables as Python classes (SQLAlchemy ORM).
-                          THIS is the schema source of truth — change a table here first.
-  schemas/api/            Request/response shapes (Pydantic). Different from models/:
-                          these describe JSON over HTTP, those describe database rows.
-  services/agent/         The agent.
-                            graph.py  — wires the loop together
-                            nodes.py  — the LLM call + the system prompt (worth reading)
-                            tools.py  — the four tools the agent can call
-                            state.py  — what gets carried between loop iterations
-  infrastructure/         Database connection + session handling.
-                          NOT the CDK app — same word, different thing. Easy to confuse.
-  config/                 Settings, all driven by environment variables.
+backend/                 The API. Lambda in AWS, uvicorn locally.
+  api/                    HTTP routes only — thin, no business logic
+  domain/                 document.py (upload pipeline) and search.py (agent + scoring)
+  models/                 Database tables (SQLAlchemy) — the schema source of truth
+  schemas/api/            Request/response shapes (Pydantic)
+  services/agent/         graph.py, nodes.py (LLM + system prompt), tools.py, state.py
+  infrastructure/         DB connection and sessions — NOT the CDK app
+  config/                 Settings, driven by environment variables
 
-frontend/                The Streamlit chat client. Pure HTTP calls — no AI logic lives here.
-  api_client.py           Every network call to the API
-  ui.py                   All rendering and Streamlit state
+frontend/                Streamlit client — api_client.py (HTTP) and ui.py (rendering)
 
-infrastructure/          The AWS definition (CDK, Python). One stack, split by concern:
+infrastructure/          CDK. One stack, split by concern:
   backend/network.py      VPC, subnets, VPC endpoints
   backend/database.py     RDS Postgres
   backend/storage.py      S3 bucket
-  backend/compute.py      The Lambda + its IAM permissions
-  backend/api.py          API Gateway + the API key
-  backend/backend_stack.py  Assembles all of the above; model IDs are set here
+  backend/compute.py      Lambda + IAM permissions
+  backend/api.py          API Gateway + API key
+  backend/backend_stack.py  Assembles everything; model IDs set here
 
-alembic/                 Database migrations (versioned schema changes)
-docker-compose.yml       Local Postgres for development
-Makefile                 Shortcuts for deploys, migrations, and the local dev servers
+alembic/                 Database migrations
+Makefile                 Shortcuts for deploys, migrations, and local dev servers
 ```
+
+---
 
 ## 🚀 Getting Started
 
-### What you need first
+**Prerequisites:** Python 3.12, Docker running, AWS CLI configured, and the CDK CLI
+(`npm install -g aws-cdk`). Bedrock model access is opt-in per account and region — enable both the
+embedding model and the chat model in your deployment region first. Each of the three areas keeps
+its own virtualenv; activate the right one before running anything in it.
 
-| Requirement | Why | Check it |
-|---|---|---|
-| **Python 3.12** | The Lambda image is 3.12; matching locally avoids surprises | `python3 --version` |
-| **Docker**, running | The Lambda is packaged as a container image, and local dev uses docker-compose | `docker ps` |
-| **AWS CLI**, configured | CDK and the helper scripts use your credentials | `aws sts get-caller-identity` |
-| **AWS CDK CLI** | Turns the Python infrastructure code into real AWS resources | `npm install -g aws-cdk` then `cdk --version` |
-
-
-Bedrock model access is opt-in per account and per region, and worth confirming before deploying:
-enable both the embedding model and the chat model in the deployment region.
-
-Each of the three areas keeps its own virtualenv, and nothing is installed globally — activate the
-right one before running anything in it.
-
----
-
-### Option A — Run it locally first (recommended)
-
-Fastest way to see it work, and it creates no AWS infrastructure.
-
-**1. Start a local Postgres with pgvector** (the one service worth containerizing locally):
+### Option A — Run it locally
 
 ```bash
-docker-compose up -d pgvector      # Postgres 18 + pgvector on localhost:5432
+docker-compose up -d pgvector    # Postgres + pgvector on :5432
+make db-upgrade                  # create extensions, tables, index
+make run                         # backend on :8000  (interactive docs at /docs)
+make run-streamlit               # Streamlit client on :8501
 ```
 
-**2. Point the backend at it and create the tables.** `.env` should contain:
+`.env` needs `DATABASE_URL=postgresql+asyncpg://rag_user:rag_password@localhost:5432/rag_db`.
 
-```
-DATABASE_URL=postgresql+asyncpg://rag_user:rag_password@localhost:5432/rag_db
-```
-
-then:
-
-```bash
-make db-upgrade     # creates the extensions, tables, and index
-```
-
-**3. Run the two apps**, each in its own terminal:
-
-```bash
-make run             # backend with auto-reload on :8000
-make run-streamlit   # Streamlit client on :8501
-```
-
-The API's interactive docs are at `http://localhost:8000/docs` — FastAPI generates them from the
-code, so it's the quickest way to see every endpoint and try one without writing a curl command.
-
-Two constraints apply to the local setup:
-
-- **Bedrock calls still go to real AWS.** There is no local model, so embedding and generation are
-  billed normally and AWS credentials must be available to the backend process. Everything else —
-  database, API, UI — runs locally.
-- **There is no authentication locally.** The token is enforced by API Gateway, which isn't in the
-  path when `uvicorn` is run directly, so local testing cannot validate auth behavior.
-
-> ⚠️ `docker-compose up` (all services) does **not** currently work: the compose file builds
-> `frontend/Dockerfile`, which isn't in the repo, and the backend service builds the Lambda runtime
-> image whose entrypoint is the Lambda handler rather than a web server on `:8000`. Use the
-> `pgvector` service plus `make run` / `make run-streamlit` as above until that's fixed.
-
----
+Two constraints: **Bedrock calls still go to real AWS** (there is no local model, so embedding and
+generation are billed normally), and **there is no authentication locally** — the token is enforced
+by API Gateway, which isn't in the path when running directly.
 
 ### Option B — Deploy to AWS
 
-#### Step 1 — Install the infrastructure dependencies
-
 ```bash
-cd infrastructure
-python3 -m venv .venv
-. .venv/bin/activate
+cd infrastructure && python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-```
 
-#### Step 2 — Bootstrap CDK (first time per account/region only)
-
-```bash
-cdk bootstrap
-```
-
-CDK needs a staging area in the account to upload the Docker image and templates it builds.
-`bootstrap` creates it once per account and region.
-
-#### Step 3 — Set the IP allowed to reach the database
-
-```bash
-export DEV_ACCESS_IP=$(curl -s ifconfig.me)
-```
-
-This becomes the single-IP firewall rule on the database, and is required for both synth and
-deploy. Re-export it whenever your address changes — home, office, VPN — and redeploy, otherwise
-the database is no longer reachable from your machine.
-
-#### Step 4 — Synthesize, then deploy
-
-```bash
-cdk synth    # renders the CloudFormation template locally
+cdk bootstrap                              # once per account/region
+export DEV_ACCESS_IP=$(curl -s ifconfig.me)   # required — the DB firewall rule
+cdk synth                                  # dry run, touches nothing in AWS
 cdk deploy RagChatBackendStack --require-approval=never
 ```
 
-`synth` is a dry run against the local definition and touches nothing in AWS. `deploy` takes
-roughly 10–15 minutes on a fresh account, most of it provisioning RDS.
+Deploy takes 10–15 minutes on a fresh account, most of it provisioning RDS, and prints the outputs
+every following step needs: `ApiEndpoint`, `ApiKeyId`, `DatabaseEndpoint`, `UploadBucketName`,
+`LambdaFunctionName`.
 
-When it finishes, CDK prints the **outputs** — save these, every following step needs them:
-
-```
-RagChatBackendStack.ApiEndpoint       = https://abc123.execute-api.us-east-1.amazonaws.com/prod/
-RagChatBackendStack.ApiKeyId          = x8acrmbp9l
-RagChatBackendStack.DatabaseEndpoint  = rag-chat-db.xxxx.us-east-1.rds.amazonaws.com
-RagChatBackendStack.UploadBucketName  = rag-chat-document-bucket
-RagChatBackendStack.LambdaFunctionName = rag-chat-app
-```
-
-#### Step 5 — Get the real access token
-
-`ApiKeyId` is an identifier, **not** the token. Exchange it for the actual value:
+`ApiKeyId` is an identifier, not the token. Exchange it, then populate `.env.prod` (gitignored):
 
 ```bash
 aws apigateway get-api-key --api-key <ApiKeyId> --include-value --query value --output text
 ```
 
-Put that value in `.env.prod` as `API_TOKEN`, along with the other outputs. That file is gitignored
-— never commit it.
-
-#### Step 6 — Create the database tables
-
-The deploy creates an *empty* Postgres instance. The tables don't exist yet, and **migrations do
-not run automatically** — you must run them yourself after every fresh deploy:
+Create the schema — **migrations do not run automatically**, and this runs from your machine, which
+is why `DEV_ACCESS_IP` matters:
 
 ```bash
 make db-upgrade ENV=prod
 ```
 
-The migrations in `alembic/versions/` build the schema from nothing when run in order: enable the
-`vector` and `pg_trgm` extensions, create the `document` and `chunk` tables, add the HNSW index.
-
-This runs from your machine, over the internet, to the database — which is why Step 3's
-`DEV_ACCESS_IP` matters.
-
-#### Step 7 — Add documents
-
-Load the deploy values into your shell, then upload:
+Add documents and ask a question:
 
 ```bash
 set -a && source .env.prod && set +a          # API_BASE_URL and API_TOKEN
 
-curl -X POST "$API_BASE_URL/api/upload/" \
-  -H "x-api-key: $API_TOKEN" \
-  -F "file=@path/to/document.pdf"
-```
+curl -X POST "$API_BASE_URL/api/upload/" -H "x-api-key: $API_TOKEN" -F "file=@doc.pdf"
 
-Confirm what's indexed:
-
-```bash
-curl -s "$API_BASE_URL/api/files/" -H "x-api-key: $API_TOKEN" | python -m json.tool
-curl -s "$API_BASE_URL/api/query/count" -H "x-api-key: $API_TOKEN"
-```
-
-#### Step 8 — Run the Streamlit client
-
-```bash
-cd frontend
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-# edit it:
-#   API_BASE_URL = "<ApiEndpoint from step 4>"
-#   API_TOKEN    = "<token value from step 5>"
-
-streamlit run app.py
-```
-
-Opens at `http://localhost:8501`. **Check connection** in the sidebar confirms the URL and token are
-wired up before asking anything.
-
-#### Step 9 — Ask a question
-
-Through the UI, or straight from the terminal:
-
-```bash
 curl -s -X POST "$API_BASE_URL/api/query/" \
-  -H "x-api-key: $API_TOKEN" \
-  -H "Content-Type: application/json" \
+  -H "x-api-key: $API_TOKEN" -H "Content-Type: application/json" \
   -d '{"question": "What does the knowledge base cover?", "top_k": 5}' | python -m json.tool
 ```
 
-The first request after an idle period includes the Lambda cold start and takes noticeably longer
-than subsequent ones.
-
----
+For the UI: `cd frontend`, install requirements, copy `.streamlit/secrets.toml.example` to
+`secrets.toml` with `API_BASE_URL` and `API_TOKEN`, then `streamlit run app.py`.
 
 ### 🧹 Cleanup
 
@@ -438,77 +259,39 @@ than subsequent ones.
 make destroy    # cdk destroy --all --force
 ```
 
-The S3 bucket is configured with `auto_delete_objects`, so this empties and removes it — no manual
-step. RDS has deletion protection off and no backup retention, so it goes cleanly with no leftover
-snapshot.
-
-**One thing this doesn't remove:** the database password in Secrets Manager. AWS keeps deleted
-secrets for a recovery window (default 30 days) and bills ~$0.40/month until it lapses. To remove
-it immediately:
-
-```bash
-aws secretsmanager delete-secret --secret-id <name> --force-delete-without-recovery
-```
-
-Afterwards, confirm the stack is gone from the CloudFormation console and no resources remain.
+The S3 bucket empties itself and RDS leaves no snapshot. The one leftover is the database password
+in Secrets Manager, which AWS retains for a recovery window and bills ~$0.40/month until it lapses;
+`aws secretsmanager delete-secret --force-delete-without-recovery` removes it immediately.
 
 ---
 
 ## 📡 API Reference
 
-Everything is served under the API Gateway URL from Step 4, e.g.
-`https://abc123.execute-api.us-east-1.amazonaws.com/prod`.
-
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/health/` | Liveness check, no side effects |
+| GET | `/api/health/` | Liveness check |
 | POST | `/api/upload/` | Upload one file — `multipart/form-data`, field `file` |
-| POST | `/api/upload/batch` | Upload several files in one request |
-| GET | `/api/files/?skip=0&limit=100` | Paginated document list |
+| POST | `/api/upload/batch` | Upload several files |
+| GET | `/api/files/` | Paginated document list (`skip`, `limit`) |
 | GET | `/api/files/{file_id}` | One document's metadata |
-| GET | `/api/files/{file_id}/download` | Short-lived (5 min) presigned S3 URL for the original file |
-| DELETE | `/api/files/{file_id}` | Delete a document (S3 original + Postgres row + its chunks) |
-| POST | `/api/query/` | Ask the knowledge base a question (the core endpoint) |
+| GET | `/api/files/{file_id}/download` | Short-lived presigned S3 URL for the original |
+| DELETE | `/api/files/{file_id}` | Delete a document and its chunks |
+| POST | `/api/query/` | Ask the knowledge base a question |
 | GET | `/api/query/count` | Total indexed chunk count |
-
-A **presigned URL** is a temporary link that grants access to a private S3 file without making the
-bucket public. The bucket stays fully locked down; the link expires after 5 minutes.
 
 ### Authentication
 
-Every route requires this header:
-
-```
-x-api-key: <token>
-```
-
-It is validated by API Gateway itself, so a request without a valid key is rejected at the edge and
-never reaches the Lambda. There is no authentication logic anywhere in the application code.
-
-**How the token is managed:**
-- Created by CDK (`add_api_key` in `infrastructure/backend/api.py`) — never hardcoded in source.
-- Retrieved after deploy with the `aws apigateway get-api-key` command in Step 5.
-- Stored in `.env.prod` (for command-line use) and `frontend/.streamlit/secrets.toml` (for the UI).
-  Both are gitignored. `frontend/api_client.py` attaches it to every request.
+Every route requires `x-api-key: <token>`, validated by API Gateway itself, so a request without a
+valid key is rejected at the edge and never reaches the Lambda. There is no authentication logic in
+the application code. The key is created by CDK, retrieved after deploy with
+`aws apigateway get-api-key`, and stored in `.env.prod` and `frontend/.streamlit/secrets.toml` —
+both gitignored.
 
 ### `POST /api/query/`
 
-Request:
-```json
-{
-  "question": "What is the refund policy for enterprise customers?",
-  "top_k": 5,
-  "explain_like_10": false
-}
-```
+`question` is required (1–1000 chars). `top_k` (1–20, default 5) caps how many source passages come
+back; it does not limit how much the agent searches internally.
 
-| Field | Required | Meaning |
-|---|---|---|
-| `question` | yes | 1–1000 characters |
-| `top_k` | no (default 5) | 1–20. Caps how many source passages come back in the response. Note it does **not** limit how much the agent searches internally — see [Inside the RAG pipeline](#-inside-the-rag-pipeline). |
-| `explain_like_10` | no (default false) | Accepted and echoed back, but does not currently change the answer — see [Known Limitations](#known-limitations) |
-
-Response:
 ```json
 {
   "answer": "Enterprise customers can request a refund within the documented refund window...",
@@ -523,11 +306,8 @@ Response:
   ],
   "confidence_score": 0.84,
   "confidence_breakdown": {
-    "best_similarity": 0.91,
-    "avg_similarity": 0.84,
-    "consistency": 0.93,
-    "keyword_match": 0.62,
-    "final_score": 0.84
+    "best_similarity": 0.91, "avg_similarity": 0.84,
+    "consistency": 0.93, "keyword_match": 0.62, "final_score": 0.84
   },
   "similarity_scores": [0.91, 0.84, 0.78],
   "query": "What is the refund policy for enterprise customers?",
@@ -536,128 +316,60 @@ Response:
 }
 ```
 
-| Field | What it tells you |
-|---|---|
-| `answer` | The generated response, built only from retrieved passages |
-| `sources` | The passages behind it. `source` is the filename, `chunk_index` its position in that document, `content_preview` the actual text |
-| `similarity_score` | How strong a match that passage was, 0–1 |
-| `confidence_score` | Overall confidence in the answer, 0–1 |
-| `confidence_breakdown` | The components behind that number — see [Confidence](#confidence-explained) |
-
-This differs slightly from the schema in the brief: sources are flattened (no separate
-`document_id`/`chunk_id` — `source` + `chunk_index` identify a passage), and there's no `metadata`
-block (`model`, `request_id`, `latency_ms`) yet. Both noted in
-[Known Limitations](#known-limitations).
-
 ---
 
 ## 🧠 Inside the RAG Pipeline
 
-The implementation detail behind [How It Works](#-how-it-works).
+**Ingestion** (`backend/domain/document.py`) is three steps: original bytes to S3, text extraction,
+then chunking and embedding into Postgres in one transaction. Splitting is boundary-aware — it
+breaks on paragraphs first, then sentences, then words. Embedding calls run 16 at a time with
+adaptive retries, since Titan embeds one chunk per call and throttles per account.
 
-### Ingestion — `backend/domain/document.py`
-
-Three steps, in order:
-
-1. **ingest** — original bytes to S3 under `raw/{document_id}/{filename}`.
-2. **transform** — text extraction per file type.
-3. **index** — split into 1000-character chunks with 200 overlap, each recording its character
-   offset in the source text, then one Titan embedding call per chunk, then a single database
-   transaction inserting the document and all its chunks.
-
-Splitting is boundary-aware: it breaks on paragraphs first, then sentences, then words, falling
-back to a hard character cut only when nothing better is available — so chunks land on natural
-boundaries far more often than under fixed-width splitting.
-
-Embedding calls run 16 at a time with adaptive retries. Titan embeds one chunk per call, so a
-200-chunk document processed sequentially is 200 round trips of pure latency. The concurrency bound
-exists because Bedrock throttles per account; adaptive retry backs off when it does.
-
-### The four tools — `backend/services/agent/tools.py`
+**The four tools** (`backend/services/agent/tools.py`):
 
 | Tool | What it does |
 |---|---|
-| `semantic_search(concept)` | Embeds the phrase, finds nearest chunks by cosine distance via the HNSW index. Returns text, filename, similarity, and character offsets |
-| `keyword_search(pattern)` | Postgres case-insensitive regex (`~*`) over full document text. Guarded by a 5-second statement timeout so a pathological pattern can't tie up a connection |
-| `list_documents()` | Filenames only, no content — cheap, for questions about the corpus itself |
-| `read_document(document_id, char_start, char_end)` | Reads a character range of the extracted text, capped at 8000 characters per call. This is how a search hit gets expanded into full context |
+| `semantic_search(concept)` | Nearest chunks by cosine distance via the HNSW index. Returns text, filename, similarity, offsets |
+| `keyword_search(pattern)` | Case-insensitive regex over document text, guarded by a 5-second statement timeout |
+| `list_documents()` | Filenames only, for questions about the corpus itself |
+| `read_document(id, start, end)` | A character range of the extracted text, capped at 8000 characters — how a hit is expanded into full context |
 
-The system prompt in `nodes.py` carries most of the behavior worth reviewing. It instructs the
-model to expand every hit before answering, match search effort to question complexity, stop once
-the evidence is sufficient rather than searching exhaustively, never state a confidence figure
-itself, and state plainly where the documents stop covering the question.
+The system prompt in `nodes.py` carries most of the behavior worth reviewing: expand every hit
+before answering, match search effort to question complexity, never state a confidence figure, and
+say plainly where the documents stop covering the question.
 
-### Combining the two searches — `backend/domain/search.py`
-
-As the agent works, hits accumulate: semantic hits keyed by chunk (keeping the best score seen),
-keyword hits keyed by document. Afterwards the two are fused per chunk:
+**Scoring** (`backend/domain/search.py`). Semantic and keyword hits accumulate as the agent works,
+then fuse per chunk:
 
 ```
 combined = 1 - (1 - keyword_score) × (1 - semantic_score)
 ```
 
-The form treats the two signals as independent evidence: the combined score is the complement of
-both being wrong at once. A passage both searches agree on therefore scores higher than under
-either alone, while a passage found by only one keeps that one's score.
+The two signals are treated as independent evidence, so the combined score is the complement of
+both being wrong at once — a passage both searches agree on scores higher than under either alone
+(0.80 and 0.70 fuse to 0.94), while a passage found by only one keeps that score. Anything at or
+below 0.2 is treated as noise and dropped; what survives is sorted and cut to `top_k`.
 
-| semantic | keyword | combined | reading |
-|---|---|---|---|
-| 0.80 | 0.00 | 0.80 | strong meaning match only |
-| 0.00 | 0.70 | 0.70 | exact phrase match only |
-| 0.80 | 0.70 | 0.94 | both agree — much stronger evidence |
+**Confidence** is derived entirely from retrieval, never asked of the model: best similarity,
+average similarity, consistency (`1 - (best - min)` — whether the top results agree or one is a
+lucky outlier), and keyword strength. It signals that retrieval went well, not that the answer is
+correct.
 
-Any signal at or below **0.2** is treated as noise and zeroed; a chunk left with no signal is
-dropped. Whatever survives is sorted and cut to `top_k`.
-
-### <a name="confidence-explained"></a>Confidence
-
-Four components, all derived from retrieval — never asked of the model:
-
-| Component | Meaning |
-|---|---|
-| `best_similarity` | The strongest single match |
-| `avg_similarity` | Average across the returned passages |
-| `consistency` | `1 - (best - min)`. Do the top results agree, or is one a lucky outlier? |
-| `keyword_match` | Strongest exact-wording signal |
-| `final_score` | The average of the fused scores — since fusion already folds in both signals |
-
-The UI colors it green above 0.7, amber above 0.4, red below. Deliberately coarse: it's a *signal
-that retrieval went well*, not a probability the answer is correct. High confidence with wrong
-retrieval is still possible — the score reflects how well the search matched, not whether the
-document was right.
-
----
-
-## 📚 Sample Documents & Seeding
-
-A full document-ingestion workflow was optional in the brief; this project implements one anyway,
-so the knowledge base can be filled either way:
-
-1. **Streamlit uploader** — drag files into the sidebar, which posts them to `/api/upload/`.
-2. **Direct API call** — `POST /api/upload/` as shown in Step 7, using the same token as every
-   other route.
-
-The documents used during development are ML papers rather than the business-style set (refund
-policy, FAQ, handbook) the brief's example query implies. Before a review demo, place 3–5 short
-business documents in a `sample-docs/` folder and upload them through either route above.
 
 ---
 
 ## 🔐 Security
 
 - **API boundary** — API key + usage plan on every route. Nothing is publicly callable.
-- **Network** — the Lambda has no internet route at all; it reaches AWS services through VPC
-  endpoints only. The database is firewalled to a single IP, not `0.0.0.0/0`.
-- **Secrets** — the database password is generated by CDK straight into Secrets Manager and read by
-  the Lambda at startup. It is never in source, never in an environment variable, and never printed.
-  `.env`, `.env.prod`, and `secrets.toml` are all gitignored.
-- **IAM** — the Lambda's role is narrow by design: `bedrock:InvokeModel` on exactly the two model
-  ARNs it uses, read on one secret, read/write on one bucket. No wildcard grants.
-- **CORS** — currently open to all origins for demo convenience. See
-  [Known Limitations](#known-limitations).
-- **Data residency** — every AI call goes to Amazon Bedrock inside your own AWS account. No
-  third-party AI API is involved. Documents, chunks, and embeddings stay in your RDS instance;
-  originals stay in your S3 bucket. Nothing in the ingestion or query path calls a non-AWS service.
+- **Network** — the Lambda has no internet route; it reaches AWS services through VPC endpoints
+  only. The database is firewalled to a single IP.
+- **Secrets** — the database password is generated by CDK into Secrets Manager and read at startup.
+  Never in source, never in an environment variable. `.env`, `.env.prod`, and `secrets.toml` are
+  gitignored.
+- **IAM** — the Lambda's role is scoped to `bedrock:InvokeModel` on exactly the two model ARNs it
+  uses, read on one secret, read/write on one bucket. No wildcard grants.
+- **Data residency** — every model call goes to Bedrock inside your own account. Documents, chunks,
+  and embeddings stay in your RDS instance. Nothing calls a non-AWS service.
 
 ---
 
@@ -665,93 +377,65 @@ business documents in a `sample-docs/` folder and upload them through either rou
 
 | Resource | Ongoing cost driver |
 |---|---|
-| Lambda | Pay-per-invocation only — $0 idle |
-| API Gateway | Pay-per-request only — $0 idle |
-| RDS `db.t4g.micro`, 20GB | ~$12–13/month if left running — **the main thing to tear down** |
-| 2× VPC interface endpoints (Bedrock, Secrets Manager), 2 AZs | ~$0.01/hr per AZ-endpoint ≈ $14–15/month if left running |
-| S3 gateway endpoint | Free |
-| Bedrock (Titan embeddings + LLM) | Pay-per-token, near-zero at demo volume |
-| Secrets Manager | ~$0.40/month per secret while it exists |
+| Lambda, API Gateway, S3 gateway endpoint | Pay-per-use — $0 idle |
+| RDS `db.t4g.micro`, 20GB | ~$12–13/month if left running |
+| 2× VPC interface endpoints across 2 AZs | ~$14–15/month if left running |
+| Bedrock (embeddings + LLM) | Pay-per-token, near-zero at demo volume |
+| Secrets Manager | ~$0.40/month per secret |
 
-The two lines that matter are RDS and the interface endpoints: both bill by the hour regardless of
-traffic, and together they approach the $20 budget within a month. Fine for a multi-day review
-window — but **run `make destroy` as soon as evaluation is done**, don't leave it up.
+RDS and the interface endpoints bill by the hour regardless of traffic and together approach the
+$20 budget within a month. Fine for a review window — **run `make destroy` when evaluation is
+done**.
 
 ---
 
 ## 📎 Evidence of Execution
 
-*(Template — attach after a real run: the Streamlit question, the resulting `x-api-key`-authenticated
-API request, the JSON response, and either a screenshot or the relevant CloudWatch log lines showing
-the request id and latency. Nothing here should be filled in without actually having run it.)*
+*(Template — attach after a real run: the Streamlit question, the API request, the JSON response,
+and a screenshot or the relevant CloudWatch log lines.)*
 
 ---
 
 ## ⚠️ Assumptions & Known Limitations
 
-<a name="known-limitations"></a>
-
-- **Migrations aren't automatic** — a fresh `cdk deploy` leaves an empty database until
-  `make db-upgrade ENV=prod` is run against it.
-- **The S3 bucket name is hardcoded**, and S3 names are globally unique across all of AWS, so a
-  deploy into a different account collides. Change it in `infrastructure/backend/storage.py`.
+- **Migrations aren't automatic** — a fresh deploy leaves an empty database until `make db-upgrade
+  ENV=prod` is run against it.
+- **The S3 bucket name is hardcoded**, and S3 names are globally unique, so a deploy into another
+  account collides. Change it in `infrastructure/backend/storage.py`.
 - **No `metadata` in query responses** — no `request_id`, `latency_ms`, or `model`, which makes
   correlating a request with its CloudWatch log entry harder than it should be.
-- **`explain_like_10` is accepted but not implemented** — echoed back as `explain_mode`, but it
-  doesn't change the generated answer.
-- **`top_k` shapes returned sources, not retrieval depth** — the agent decides how much to search;
-  `top_k` only caps how many results come back.
-- **No conversation memory** — every request is independent. The chat history in the UI is display
-  only; previous turns are never sent back, so follow-ups like "and what about enterprise?" won't
-  resolve.
-- **No automated citation check** — nothing verifies the generated prose is actually supported by
-  the sources returned beside it, beyond the prompt instructing the model to stay grounded.
-- **CORS is wide open** (`allow_origins=["*"]`) for demo convenience.
-- **29-second ceiling** — API Gateway caps a request at 29 seconds, while the Lambda is allowed 3
-  minutes and the agent has no hard cap on tool-call iterations. A question triggering several
-  rounds of search can time out at the gateway while the Lambda is still working.
-- **Retries stack** — `api/query.py` retries the whole agent 3× and the graph retries each node 3×,
-  so a request that keeps failing can cost far more than one run.
-- **`docker-compose` only covers Postgres** — the `frontend` service references a Dockerfile that
-  isn't in the repo, and the `backend` service builds the Lambda image rather than a web server.
-  Local development runs through `make run` / `make run-streamlit` instead.
-- **RDS is publicly reachable** (locked to a single IP) rather than fully private — a deliberate
-  tradeoff for local migration/inspection convenience.
+- **`explain_like_10` is accepted but not implemented**, and **`top_k` shapes returned sources, not
+  retrieval depth**.
+- **No conversation memory** — every request is independent, so follow-up questions don't resolve
+  against earlier turns.
+- **No automated citation check** — nothing verifies the prose is supported by the sources beside
+  it, beyond the prompt.
+- **29-second ceiling** — API Gateway caps a request at 29 seconds while the Lambda is allowed 3
+  minutes, and the agent has no hard cap on tool-call iterations.
+- **CORS is open** to all origins, and **RDS is publicly reachable** (locked to a single IP) rather
+  than fully private.
 
 ---
 
 ## 🏭 Productionization — What I'd Change for Real Use
 
-**Security**
-- Move RDS fully into the private isolated subnet; run Alembic from inside the VPC (a one-off ECS
-  task, or a CDK custom resource) instead of exposing the DB to a dev IP.
-- Replace the API Gateway API key with a Lambda authorizer (JWT/Cognito) if this ever needs
-  per-user identity instead of one shared token; API keys don't expire or scope per caller.
-- Scope CORS to the actual frontend origin(s).
+The architecture is already the shape a production system would take — serverless compute behind a
+managed gateway, one database, infrastructure as code, secrets never in source. What it would need
+before carrying real traffic:
 
-**Reliability / cost control**
-- Cap agent tool-call iterations (`recursion_limit` on the LangGraph invocation) so a pathological
-  question can't run indefinitely or blow past the 29-second gateway ceiling.
-- Collapse the double retry into a single bounded layer.
-- Rate-limit per caller via the usage plan's throttle/quota settings (currently unset — unlimited
-  by default).
+**Security** — move RDS fully private and run migrations from inside the VPC; replace the shared API
+key with a Lambda authorizer (JWT/Cognito) once per-user identity matters; scope CORS to the real
+frontend origin.
 
-**Observability**
-- Add a request id generated at the API boundary, propagate it through the logs and into the
-  response `metadata` block, and emit structured JSON logs so CloudWatch Insights queries are
-  usable.
-- A CloudWatch dashboard and alarms on Lambda failure rate, p99 latency, and RDS connections would
-  surface regressions before a user reports them.
+**Reliability and cost** — cap agent tool-call iterations so a pathological question can't run past
+the gateway ceiling; collapse the double retry (three attempts around a graph that itself retries
+each node three times) into one bounded layer; set the usage plan's throttle and quota, currently
+unlimited.
 
-**Data lifecycle**
-- Automate the Alembic migration as part of deploy (CDK custom resource or a cold-start guard) so
-  a fresh `cdk deploy` doesn't require a manual step.
-- Add a retention/lifecycle policy for uploaded originals in S3 if documents are ever meant to
-  expire.
+**Observability** — a request id generated at the API boundary, propagated through logs and into
+the response, plus structured JSON logs and CloudWatch alarms on failure rate, p99 latency, and RDS
+connections.
 
-**Scaling**
-- Current scale is fine, but two ceilings would bite first: **RDS connection limits** (Lambda scales
-  out faster than a `t4g.micro` accepts connections — RDS Proxy or pgbouncer solves it) and
-  **Bedrock's per-account throttle** (already retried, but a real burst would exhaust it).
-- A larger corpus would need HNSW index tuning and probably a re-embedding strategy for when the
-  embedding model is upgraded.
+**Scaling** — two ceilings would bite first: RDS connection limits, since Lambda scales out faster
+than a `t4g.micro` accepts connections (RDS Proxy solves it), and Bedrock's per-account throttle. A
+larger corpus would need HNSW tuning and a re-embedding strategy for model upgrades.
