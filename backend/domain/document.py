@@ -7,10 +7,12 @@ chunks; the original file is kept in S3 solely for provenance. A document's
 UUID (documents.id) is its only application-level identifier.
 """
 
+import asyncio
 import hashlib
 import io
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -41,7 +43,19 @@ text_splitter = RecursiveCharacterTextSplitter(
     add_start_index=True,
 )
 
-bedrock = boto3.client("bedrock-runtime", region_name=settings.AWS_REGION)
+# How many chunks are embedded at once. Titan is invoked one chunk per call, so
+# a large document is entirely latency-bound without this. Adaptive retries back
+# off when the fan-out trips Bedrock's per-account throttle.
+EMBED_CONCURRENCY = 16
+
+bedrock = boto3.client(
+    "bedrock-runtime",
+    region_name=settings.AWS_REGION,
+    config=Config(
+        max_pool_connections=EMBED_CONCURRENCY,
+        retries={"max_attempts": 5, "mode": "adaptive"},
+    ),
+)
 # SigV4 explicitly: presigned URLs signed with SigV2 carry no session token, so
 # they are rejected when signed with the Lambda role's temporary credentials.
 s3 = boto3.client(
@@ -63,6 +77,17 @@ def _embed(text_input: str) -> list[float]:
     )
     result = json.loads(response["body"].read())
     return result["embedding"]
+
+
+async def _embed_all(texts: list[str]) -> list[list[float]]:
+    """Embed every chunk concurrently, preserving input order."""
+    loop = asyncio.get_running_loop()
+    # Its own pool: asyncio's default executor sizes itself off the CPU count,
+    # which on Lambda is far below the concurrency this call is waiting on.
+    with ThreadPoolExecutor(max_workers=EMBED_CONCURRENCY) as pool:
+        return await asyncio.gather(
+            *(loop.run_in_executor(pool, _embed, text_input) for text_input in texts)
+        )
 
 
 def _content_hash(content: bytes) -> str:
@@ -133,6 +158,7 @@ async def upload_document(filename: str, content: bytes) -> FileUploadResponse:
     s3.put_object(Bucket=settings.S3_BUCKET_NAME, Key=s3_key, Body=content)
 
     chunks = text_splitter.create_documents([text])
+    embeddings = await _embed_all([chunk.page_content for chunk in chunks])
 
     async with db_session() as session:
         session.add(Document(
@@ -154,7 +180,7 @@ async def upload_document(filename: str, content: bytes) -> FileUploadResponse:
                 content=chunk.page_content,
                 char_start=char_start,
                 char_end=char_start + len(chunk.page_content),
-                embedding=_embed(chunk.page_content),
+                embedding=embeddings[index],
             ))
         await session.commit()
 
