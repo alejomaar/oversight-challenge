@@ -33,9 +33,12 @@ from schemas.api.files import (
     FileUploadResponse,
 )
 
+# add_start_index records each chunk's offset into the extracted text, which is
+# what lets a search hit be expanded back into its surrounding document.
 text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=settings.CHUNK_SIZE,
     chunk_overlap=settings.CHUNK_OVERLAP,
+    add_start_index=True,
 )
 
 bedrock = boto3.client("bedrock-runtime", region_name=settings.AWS_REGION)
@@ -129,7 +132,7 @@ async def upload_document(filename: str, content: bytes) -> FileUploadResponse:
     s3_key = f"{settings.RAW_PREFIX}/{document_id}/{filename}"
     s3.put_object(Bucket=settings.S3_BUCKET_NAME, Key=s3_key, Body=content)
 
-    chunks = text_splitter.split_text(text)
+    chunks = text_splitter.create_documents([text])
 
     async with db_session() as session:
         session.add(Document(
@@ -142,13 +145,16 @@ async def upload_document(filename: str, content: bytes) -> FileUploadResponse:
         # No ORM relationship() links Document/Chunk, so unit-of-work has no
         # dependency info to order the inserts — flush the document first.
         await session.flush()
-        for index, chunk_text in enumerate(chunks):
+        for index, chunk in enumerate(chunks):
+            char_start = chunk.metadata["start_index"]
             session.add(Chunk(
                 id=uuid.uuid4(),
                 document_id=document_id,
                 chunk_index=index,
-                content=chunk_text,
-                embedding=_embed(chunk_text),
+                content=chunk.page_content,
+                char_start=char_start,
+                char_end=char_start + len(chunk.page_content),
+                embedding=_embed(chunk.page_content),
             ))
         await session.commit()
 

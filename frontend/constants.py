@@ -4,72 +4,101 @@ DEFAULT_API_BASE_URL = "http://localhost:8000"
 
 CSS_STYLE = """
     <style>
-    /* Hide Streamlit default elements */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-
-    /* Dark theme background */
-    .stApp {
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    :root {
+        --kb-bg: #161a2e;
+        --kb-accent: #7c8cf8;
+        --kb-line: rgba(124, 140, 248, 0.28);
+        --kb-surface: rgba(255, 255, 255, 0.05);
+        --kb-text: #e7eaf6;
+        --kb-muted: rgba(231, 234, 246, 0.68);
     }
 
-    /* Main content background - adjust for sidebar */
-    .main .block-container {
-        background: transparent;
-        padding-top: 2rem;
-        max-width: 100% !important;
-        padding-left: 1rem;
-        padding-right: 1rem;
-    }
-
-    [data-testid="stSidebar"] {
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-        height: 100vh !important;
-        overflow-y: auto !important;
-    }
-
-    [data-testid="stSidebar"] * {
-        color: #ffffff !important;
-    }
-
-    [data-testid="stSidebar"][aria-expanded="true"] {
-        min-width: 21rem !important;
-        max-width: 50% !important;
-    }
-
-    [data-testid="stSidebar"] {
-        visibility: visible !important;
-    }
-
-    [data-testid="stSidebar"] [data-testid="collapsedControl"] {
+    /* Hide Streamlit chrome, but keep the header so the sidebar toggle stays
+       reachable on narrow screens. */
+    #MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"] {
         display: none !important;
     }
 
-    section[data-testid="stMain"] {
-        margin-left: 0 !important;
+    [data-testid="stHeader"] {
+        background: transparent !important;
     }
 
-    .main .block-container {
-        width: auto !important;
+    .stApp {
+        background: linear-gradient(160deg, #1a1a2e 0%, #16213e 100%) fixed;
+        color: var(--kb-text);
     }
 
-    .uploaded-file-item {
-        padding: 0.75rem;
-        margin: 0.5rem 0;
-        background: rgba(102, 126, 234, 0.2);
-        border-radius: 8px;
-        border: 1px solid rgba(102, 126, 234, 0.3);
-        color: #ffffff;
-        font-size: 0.9rem;
+    /* Readable measure, centred, with room for the floating chat bar. */
+    [data-testid="stMain"] .block-container {
+        background: transparent;
+        max-width: 58rem;
+        margin: 0 auto;
+        padding: 1.5rem 1.5rem 8rem;
     }
 
-    @keyframes smoothSlide {
-        from { opacity: 0; transform: translateY(10px); }
-        to { opacity: 1; transform: translateY(0); }
+    /* Bottom chat bar: the default opaque slab is replaced by a fade so the
+       conversation scrolls under it instead of being cut off by a black band. */
+    [data-testid="stBottom"],
+    [data-testid="stBottom"] > div {
+        background: transparent !important;
     }
 
-    .smooth-slide { animation: smoothSlide 0.4s ease-out; }
+    [data-testid="stBottomBlockContainer"] {
+        max-width: 58rem;
+        margin: 0 auto;
+        padding: 1.5rem 1.5rem 1.25rem;
+        background: linear-gradient(to top, var(--kb-bg) 55%, rgba(22, 26, 46, 0));
+    }
+
+    [data-testid="stChatInput"] {
+        background: rgba(255, 255, 255, 0.07) !important;
+        border: 1px solid var(--kb-line) !important;
+        border-radius: 14px !important;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    }
+
+    [data-testid="stChatInput"]:focus-within {
+        border-color: var(--kb-accent) !important;
+    }
+
+    [data-testid="stChatInput"] textarea {
+        background: transparent !important;
+        color: var(--kb-text) !important;
+    }
+
+    [data-testid="stChatInput"] textarea::placeholder {
+        color: rgba(231, 234, 246, 0.45) !important;
+    }
+
+    [data-testid="stSidebar"] {
+        background: rgba(18, 20, 38, 0.92);
+        border-right: 1px solid var(--kb-line);
+    }
+
+    [data-testid="stSidebar"][aria-expanded="true"] {
+        min-width: 20rem;
+        max-width: 24rem;
+    }
+
+    [data-testid="stSidebar"] .block-container,
+    [data-testid="stSidebar"] > div {
+        padding-top: 1rem;
+    }
+
+    /* Sidebar rows stay legible in a narrow column. */
+    [data-testid="stSidebar"] [data-testid="stHorizontalBlock"] {
+        gap: 0.35rem;
+        align-items: center;
+    }
+
+    [data-testid="stSidebar"] a {
+        word-break: break-word;
+    }
+
+    [data-testid="stSidebar"] hr {
+        margin: 0.75rem 0;
+        border-color: var(--kb-line);
+    }
 
     @keyframes smoothFade {
         from { opacity: 0; }
@@ -78,26 +107,40 @@ CSS_STYLE = """
 
     .smooth-fade { animation: smoothFade 0.3s ease-in; }
 
-    .navbar {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 1.25rem 2rem;
-        background: rgba(26, 26, 46, 0.9);
-        border-bottom: 2px solid rgba(102, 126, 234, 0.3);
-        margin-bottom: 1.5rem;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-        border-radius: 12px;
-    }
-
     .navbar-title {
-        font-size: 1.75rem;
+        font-size: clamp(1.25rem, 3vw, 1.6rem);
         font-weight: 700;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        line-height: 1.3;
+        margin-bottom: 1.25rem;
+        padding-bottom: 0.75rem;
+        border-bottom: 1px solid var(--kb-line);
+        background: linear-gradient(135deg, #8f9bff 0%, #b98cf0 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         background-clip: text;
-        color: #ffffff;
+    }
+
+    .hero {
+        padding: clamp(1.25rem, 4vw, 2.25rem);
+        background: var(--kb-surface);
+        border: 1px solid var(--kb-line);
+        border-radius: 16px;
+        margin-bottom: 1.5rem;
+        text-align: center;
+    }
+
+    .hero h1 {
+        font-size: clamp(1.5rem, 4vw, 2.25rem);
+        line-height: 1.2;
+        margin: 0 0 0.75rem;
+        color: var(--kb-text);
+    }
+
+    .hero p {
+        margin: 0 auto;
+        max-width: 38rem;
+        font-size: 1rem;
+        color: var(--kb-muted);
     }
 
     .stButton > button[kind="primary"] {
@@ -119,25 +162,6 @@ CSS_STYLE = """
         background: rgba(255, 255, 255, 0.1) !important;
         color: #ffffff !important;
         border: 1px solid rgba(102, 126, 234, 0.3) !important;
-    }
-
-    .doc-preview {
-        background: rgba(255, 255, 255, 0.05);
-        border-radius: 12px;
-        padding: 1.5rem;
-        height: calc(100vh - 200px);
-        overflow-y: auto;
-        border: 1px solid rgba(102, 126, 234, 0.3);
-        backdrop-filter: blur(10px);
-    }
-
-    .doc-preview-header {
-        font-size: 1.3rem;
-        font-weight: 700;
-        margin-bottom: 1.5rem;
-        color: #ffffff;
-        padding-bottom: 0.75rem;
-        border-bottom: 2px solid #667eea;
     }
 
     .doc-preview-content {
@@ -170,25 +194,19 @@ CSS_STYLE = """
         box-shadow: 0 4px 12px rgba(0,0,0,0.15);
     }
 
-    .stFileUploader > div > div {
-        background: rgba(255, 255, 255, 0.05) !important;
-        border: 2px dashed #667eea !important;
+    .stFileUploader [data-testid="stFileUploaderDropzone"] {
+        background: rgba(255, 255, 255, 0.04) !important;
+        border: 1px dashed var(--kb-accent) !important;
         border-radius: 12px !important;
-        padding: 2rem !important;
-        backdrop-filter: blur(10px);
+        padding: 1rem !important;
     }
 
-    .stFileUploader label {
-        color: #ffffff !important;
+    h1, h2, h3, h4, h5, h6 {
+        color: var(--kb-text);
     }
 
-    h1, h2, h3, h4, h5, h6, p, span, div {
-        color: #ffffff !important;
-    }
-
-    /* Declared after the blanket white rule so download links stay visible. */
     a, a:visited {
-        color: #667eea !important;
+        color: var(--kb-accent);
         text-decoration: none;
     }
 
@@ -197,18 +215,9 @@ CSS_STYLE = """
     }
 
     [data-testid="stChatMessage"] {
-        background: rgba(255, 255, 255, 0.05) !important;
-    }
-
-    [data-testid="stChatInput"] {
-        background: rgba(255, 255, 255, 0.1) !important;
-        border: 1px solid rgba(102, 126, 234, 0.3) !important;
-        border-radius: 12px !important;
-    }
-
-    [data-testid="stChatInput"] textarea {
-        background: rgba(255, 255, 255, 0.1) !important;
-        color: #ffffff !important;
+        background: rgba(255, 255, 255, 0.04) !important;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 12px;
     }
 
     .stSuccess {
@@ -248,33 +257,57 @@ CSS_STYLE = """
         font-size: 0.9rem;
     }
 
-    .file-item {
-        padding: 0.75rem;
-        margin: 0.5rem 0;
-        background: rgba(102, 126, 234, 0.1);
-        border-radius: 8px;
-        border: 1px solid rgba(102, 126, 234, 0.3);
-        transition: all 0.3s;
-    }
-
-    .file-item:hover {
-        background: rgba(102, 126, 234, 0.2);
-        border-color: rgba(102, 126, 234, 0.5);
-    }
-
     .feature-card {
-        padding: 1.5rem;
-        background: rgba(102, 126, 234, 0.2);
-        border-radius: 12px;
-        border: 1px solid rgba(102, 126, 234, 0.3);
-        transition: all 0.3s;
         height: 100%;
+        padding: 1.25rem;
+        background: rgba(124, 140, 248, 0.12);
+        border-radius: 12px;
+        border: 1px solid var(--kb-line);
+        transition: transform 0.2s, border-color 0.2s;
     }
 
     .feature-card:hover {
-        transform: translateY(-4px);
-        box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
-        border-color: rgba(102, 126, 234, 0.6);
+        transform: translateY(-3px);
+        border-color: rgba(124, 140, 248, 0.6);
+    }
+
+    .feature-card h3 {
+        font-size: 1rem;
+        font-weight: 600;
+        margin: 0 0 0.5rem;
+    }
+
+    .feature-card p {
+        margin: 0;
+        font-size: 0.9rem;
+        line-height: 1.5;
+        color: var(--kb-muted);
+    }
+
+    /* Columns are flex rows by default and squeeze into unreadable slivers on
+       small viewports — stack them instead. */
+    @media (max-width: 900px) {
+        [data-testid="stMain"] [data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
+
+        [data-testid="stMain"] [data-testid="stColumn"] {
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+        }
+
+        [data-testid="stMain"] .block-container {
+            padding: 1rem 1rem 7rem;
+        }
+
+        [data-testid="stBottomBlockContainer"] {
+            padding: 1rem 1rem 0.75rem;
+        }
+
+        [data-testid="stSidebar"][aria-expanded="true"] {
+            min-width: 17rem;
+        }
     }
     </style>
 """

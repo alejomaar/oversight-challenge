@@ -14,6 +14,52 @@ from schemas.api.query import ConfidenceBreakdown, QueryResponse, SourceInfo
 from services.agent import agent
 
 
+# A retrieval signal at or below this is noise, not evidence.
+SCORE_THRESHOLD = 0.2
+
+
+def _fuse_matches(
+    semantic_matches: dict[str, dict],
+    keyword_matches: dict[str, dict],
+    top_k: int,
+) -> list[dict]:
+    """Rank chunks by the combined retrieval score, keyed by chunk_id.
+
+    Both signals are treated as independent evidence that a chunk is relevant:
+    `1 - (1 - keyword)(1 - semantic)`. A chunk found by both scores higher than
+    it would under either alone, and a chunk found by only one keeps that one's
+    score. A signal at or below SCORE_THRESHOLD is too weak to count as
+    evidence, and a chunk left with no evidence at all is dropped.
+    """
+    fused = []
+    for chunk_id in semantic_matches.keys() | keyword_matches.keys():
+        semantic = semantic_matches.get(chunk_id)
+        keyword = keyword_matches.get(chunk_id)
+        hit = semantic or keyword
+
+        similarity = semantic["similarity"] if semantic else 0.0
+        keyword_score = keyword["keyword_score"] if keyword else 0.0
+
+        if similarity <= SCORE_THRESHOLD:
+            similarity = 0.0
+        if keyword_score <= SCORE_THRESHOLD:
+            keyword_score = 0.0
+        if not similarity and not keyword_score:
+            continue
+
+        fused.append({
+            "source": hit["source"],
+            "chunk_index": hit["chunk_index"],
+            "file_path": hit["file_path"],
+            "content_preview": hit["content_preview"],
+            "keyword_score": keyword_score,
+            "similarity": round(1 - (1 - keyword_score) * (1 - similarity), 3),
+        })
+
+    fused.sort(key=lambda hit: hit["similarity"], reverse=True)
+    return fused[:top_k]
+
+
 def _confidence_breakdown(scores: list[float], keyword_score: float) -> ConfidenceBreakdown:
     if not scores:
         return ConfidenceBreakdown(
@@ -24,15 +70,15 @@ def _confidence_breakdown(scores: list[float], keyword_score: float) -> Confiden
     best = max(scores)
     avg = sum(scores) / len(scores)
     consistency = round(1.0 - (best - min(scores)), 3)
-    keyword_match = keyword_score
-    final_score = round(0.5 * best + 0.3 * avg + 0.1 * consistency + 0.1 * keyword_match, 3)
 
     return ConfidenceBreakdown(
         best_similarity=round(best, 3),
         avg_similarity=round(avg, 3),
         consistency=consistency,
-        keyword_match=keyword_match,
-        final_score=final_score,
+        keyword_match=keyword_score,
+        # The combined score already carries both signals, so confidence is just
+        # its average over the top-k chunks.
+        final_score=round(avg, 3),
     )
 
 
@@ -45,11 +91,9 @@ async def answer_question(question: str, top_k: int, explain_like_10: bool) -> Q
     result = await agent.ainvoke({"messages": [HumanMessage(content=question)]})
     content = result["messages"][-1].content
 
-    keyword_matches = result["keyword_matches"]
-    keyword_score = max(keyword_matches.values(), default=0.0)
-
-    top_hits = sorted(result["semantic_matches"].values(), key=lambda hit: hit["similarity"], reverse=True)[:top_k]
+    top_hits = _fuse_matches(result["semantic_matches"], result["keyword_matches"], top_k)
     similarity_scores = [hit["similarity"] for hit in top_hits]
+    keyword_score = max((hit["keyword_score"] for hit in top_hits), default=0.0)
     breakdown = _confidence_breakdown(similarity_scores, keyword_score)
 
     if isinstance(content, str):

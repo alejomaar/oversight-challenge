@@ -105,9 +105,10 @@ def render_kb_file_list():
         st.info("No files in the knowledge base yet.")
         return []
 
+    # One bordered row per file: name on its own line so long filenames don't
+    # squeeze the action buttons into slivers.
     for f in files:
-        col1, col2, col3 = st.columns([3, 0.5, 0.5])
-        with col1:
+        with st.container(border=True):
             download = get_doc_download(f["file_id"])
             if download:
                 st.markdown(f"[📄 {f['filename']}]({download['download_url']})")
@@ -115,21 +116,22 @@ def render_kb_file_list():
                 st.markdown(f"📄 {f['filename']}")
                 st.caption("Original file unavailable for download.")
             st.caption(format_file_size(f.get("file_size", 0)))
-        with col2:
-            if st.button("ℹ️", key=f"info_{f['file_id']}", help=f"Details for {f['filename']}"):
-                st.session_state.selected_doc = f
-                st.rerun()
-        with col3:
-            if st.button("🗑️", key=f"delete_{f['file_id']}", help=f"Delete {f['filename']}"):
-                ok, status, result = api_delete(f"/api/files/{f['file_id']}")
-                if ok:
-                    st.success(f"Deleted {f['filename']}")
-                    if st.session_state.selected_doc and st.session_state.selected_doc.get("file_id") == f["file_id"]:
-                        st.session_state.selected_doc = None
+
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("ℹ️ Details", key=f"info_{f['file_id']}", use_container_width=True):
+                    st.session_state.selected_doc = f
                     st.rerun()
-                else:
-                    st.error(f"Delete failed: {result}")
-        st.markdown("---")
+            with col2:
+                if st.button("🗑️ Delete", key=f"delete_{f['file_id']}", use_container_width=True):
+                    ok, status, result = api_delete(f"/api/files/{f['file_id']}")
+                    if ok:
+                        st.success(f"Deleted {f['filename']}")
+                        if st.session_state.selected_doc and st.session_state.selected_doc.get("file_id") == f["file_id"]:
+                            st.session_state.selected_doc = None
+                        st.rerun()
+                    else:
+                        st.error(f"Delete failed: {result}")
 
     return files
 
@@ -272,35 +274,35 @@ def render_chat_interface():
 
 def render_welcome_page():
     st.markdown("""
-    <div style="padding: 2rem; background: rgba(255, 255, 255, 0.05); border-radius: 16px; border: 1px solid rgba(102, 126, 234, 0.3); margin-bottom: 2rem;">
-        <h1 style="text-align: center; color: #ffffff; margin-bottom: 1rem;">Welcome to Your Knowledgebase Agent</h1>
-        <p style="text-align: center; color: rgba(255, 255, 255, 0.8); font-size: 1.1rem; margin-bottom: 2rem;">
-            Ask a question below — the AWS-hosted API retrieves context from the knowledge base
+    <div class="hero">
+        <h1>Ask your documents anything</h1>
+        <p>
+            The AWS-hosted API retrieves context from the knowledge base
             and generates a grounded answer.
         </p>
     </div>
     """, unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3 = st.columns(3, gap="medium")
     with col1:
         st.markdown("""
         <div class="feature-card">
-            <h3 style="color: #ffffff;">🚫 No Hallucination</h3>
-            <p style="color: rgba(255, 255, 255, 0.8);">Answers are grounded in the retrieved knowledge base context.</p>
+            <h3>🚫 No Hallucination</h3>
+            <p>Answers are grounded in the retrieved knowledge base context.</p>
         </div>
         """, unsafe_allow_html=True)
     with col2:
         st.markdown("""
         <div class="feature-card">
-            <h3 style="color: #ffffff;">🔌 Thin Client</h3>
-            <p style="color: rgba(255, 255, 255, 0.8);">This app only calls the AWS API — retrieval and generation run entirely server-side.</p>
+            <h3>🔌 Thin Client</h3>
+            <p>This app only calls the AWS API — retrieval and generation run entirely server-side.</p>
         </div>
         """, unsafe_allow_html=True)
     with col3:
         st.markdown("""
         <div class="feature-card">
-            <h3 style="color: #ffffff;">✅ Confidence</h3>
-            <p style="color: rgba(255, 255, 255, 0.8);">Every answer includes the confidence score returned by the API.</p>
+            <h3>✅ Confidence</h3>
+            <p>Every answer includes the confidence score returned by the API.</p>
         </div>
         """, unsafe_allow_html=True)
 
